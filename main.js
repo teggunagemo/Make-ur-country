@@ -4,7 +4,7 @@ async function signInWithGoogle() {
     provider: 'google',
     options: {
       // ログイン完了後に戻ってくるページのURL（任意）
-      redirectTo: 'http://localhost:3000/dashboard'
+      redirectTo: 'https://teggunagemo.github.io/Make-ur-country'
     }
   })
 }
