@@ -4,8 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Googleログインテスト</title>
-  <!-- Supabaseのライブラリを読み込む -->
-  <script src="https://unpkg.com"></script>
   <style>
     body { font-family: sans-serif; padding: 40px; text-align: center; }
     button { padding: 12px 24px; font-size: 16px; cursor: pointer; border-radius: 6px; border: none; background: #4285F4; color: white; }
@@ -29,45 +27,44 @@
     <button id="logout-btn" class="logout">ログアウト</button>
   </div>
 
-  <script>
-    // ▼ 1. ここを自分のSupabaseの情報に書き換えてください ▼
+  <!-- type="module" を使うことで確実にSupabaseを読み込みます -->
+  <script type="module">
+    import { createClient } from 'https://esm.sh';
+
     const SUPABASE_URL = 'https://qmtokeiqblcdcfqvpdzg.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_TmSpj-OvbgolXIQOck0l_A_PVke17LC';
 
     // Supabaseの初期化
-    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
     const loginView = document.getElementById('login-view');
     const userView = document.getElementById('user-view');
     const userInfo = document.getElementById('user-info');
 
-    // ▼ 2. Googleログインボタンを押したときの処理
+    // Googleログインボタンを押したときの処理
     document.getElementById('login-btn').addEventListener('click', async () => {
       const { error } = await supabaseClient.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          // ログイン後に現在のページへ戻ってくる設定
           redirectTo: window.location.origin + window.location.pathname
         }
       });
       if (error) alert('ログインエラー: ' + error.message);
     });
 
-    // ▼ 3. ログアウトボタンを押したときの処理
+    // ログアウトボタンを押したときの処理
     document.getElementById('logout-btn').addEventListener('click', async () => {
       await supabaseClient.auth.signOut();
-      location.reload(); // 画面を再読み込みして未ログイン状態に戻す
+      location.reload();
     });
 
-    // ▼ 4. ページを開いたときにログイン状態をチェックする処理
+    // ページを開いたときにログイン状態をチェックする処理
     supabaseClient.auth.onAuthStateChange((event, session) => {
       if (session) {
-        // ログインしている場合：ユーザー画面を表示
         loginView.classList.add('hidden');
         userView.classList.remove('hidden');
         userInfo.textContent = `ログイン中のメール: ${session.user.email}`;
       } else {
-        // ログインしていない場合：ログイン画面を表示
         loginView.classList.remove('hidden');
         userView.classList.add('hidden');
       }
