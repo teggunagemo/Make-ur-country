@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Make ur country - 国家設定</title>
+</head>
+<body>
+
+  <button id="logout-btn">ログアウト</button>
+  <h1>国家ステータス設定</h1>
+
+  <form id="setting-form">
+    <div>
+      <label>国家名：<input type="text" id="input1" required></label>
+    </div>
+    <div>
+      <label>主食：<input type="text" id="input2" required></label>
+    </div>
+    <div>
+      <label>国技：<input type="text" id="input3" required></label>
+    </div>
+    <div>
+      <label>首都名：<input type="text" id="input4" required></label>
+    </div>
+
+    <button type="submit">決定</button>
+  </form>
+
+  <script>
+    const SUPABASE_URL = 'https://supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable_TmSpj-OvbgolXIQOck0l_A_PVke17LC';
+
+    // ログアウト処理
+    document.getElementById('logout-btn').addEventListener('click', () => {
+      localStorage.removeItem('sb_access_token');
+      window.location.href = './index.html';
+    });
+
+    // ログインチェック
+    async function verifyUser() {
+      const token = localStorage.getItem('sb_access_token');
+      if (!token) {
+        window.location.href = './index.html';
+        return;
+      }
+
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'apikey': SUPABASE_ANON_KEY
+        }
+      });
+
+      if (!res.ok) {
+        localStorage.removeItem('sb_access_token');
+        window.location.href = './index.html';
+        return;
+      }
+
+      const user = await res.json();
+
+      // 決定ボタンが押された時の処理
+      document.getElementById('setting-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const data = {
+          val1: document.getElementById('input1').value,
+          val2: document.getElementById('input2').value,
+          val3: document.getElementById('input3').value,
+          val4: document.getElementById('input4').value,
+
+        };
+
+        // ▼ ここにSupabaseへの保存処理や game.html への遷移を書く ▼
+        console.log(data);
+                const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/countries`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+            'apikey': SUPABASE_ANON_KEY,
+            'Prefer': 'return=minimal'
+          },
+          body: JSON.stringify(data)
+        });
+
+        if (saveRes.ok) {
+          // 保存成功したらゲーム画面へ移動
+          window.location.href = './game.html';
+        } else {
+          const err = await saveRes.json();
+          alert('保存エラー: ' + JSON.stringify(err));
+        }
+      });
+    }
+
+    verifyUser();
+  </script>
+
+</body>
+</html>
