@@ -19,7 +19,7 @@
 
     if (token) {
       localStorage.setItem('sb_access_token', token);
-      window.location.href = './game.html';
+      window.location.href = './setting.html';
     } else if (localStorage.getItem('sb_access_token')) {
       // すでにログイン済みならそのままゲーム画面へ
       window.location.href = './setting.html';
