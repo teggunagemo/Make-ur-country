@@ -2,91 +2,34 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Make ur country - ログイン</title>
-  <style>
-    body { font-family: sans-serif; padding: 40px; text-align: center; }
-    button { padding: 12px 24px; font-size: 16px; cursor: pointer; border-radius: 6px; border: none; background: #4285F4; color: white; }
-    button.logout { background: #666; margin-top: 20px; }
-    .hidden { display: none; }
-  </style>
 </head>
 <body>
 
-  <!-- 未ログイン画面 -->
-  <div id="login-view">
-    <h1>ようこそ</h1>
-    <p>続行するにはGoogleアカウントでログインしてください。</p>
-    <button id="login-btn">Googleでログイン</button>
-  </div>
-
-  <!-- ログイン成功画面 -->
-  <div id="user-view" class="hidden">
-    <h1>ログイン成功！</h1>
-    <p id="user-info"></p>
-    <button id="logout-btn" class="logout">ログアウト</button>
-  </div>
+  <button id="login-btn">Googleでログイン</button>
 
   <script>
-    const SUPABASE_URL = 'https://qmtokeiqblcdcfqvpdzg.supabase.co';
+    const SUPABASE_URL = 'https://supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_TmSpj-OvbgolXIQOck0l_A_PVke17LC';
 
-    const loginView = document.getElementById('login-view');
-    const userView = document.getElementById('user-view');
-    const userInfo = document.getElementById('user-info');
+    // Googleから戻ってきた時のトークンを保存して game.html へ飛ばす
+    const hash = window.location.hash.substring(1);
+    const params = new URLSearchParams(hash);
+    const token = params.get('access_token');
 
-    // 1. Googleログインボタンを押したときの処理（外部ライブラリなしで直接Googleへ移動）
+    if (token) {
+      localStorage.setItem('sb_access_token', token);
+      window.location.href = './game.html';
+    } else if (localStorage.getItem('sb_access_token')) {
+      // すでにログイン済みならそのままゲーム画面へ
+      window.location.href = './setting.html';
+    }
+
+    // ログインボタン処理
     document.getElementById('login-btn').addEventListener('click', () => {
       const redirectTo = encodeURIComponent(window.location.origin + window.location.pathname);
       window.location.href = `${SUPABASE_URL}/auth/v1/authorize?provider=google&redirect_to=${redirectTo}`;
     });
-
-    // 2. ログアウトボタンを押したときの処理
-    document.getElementById('logout-btn').addEventListener('click', () => {
-      localStorage.removeItem('sb_access_token');
-      window.location.hash = '';
-      location.reload();
-    });
-
-    // 3. Googleから戻ってきたときのログイン状態チェック
-    async function checkAuth() {
-      // URLの後ろにアクセストークンが付いて戻ってきた場合
-      const hash = window.location.hash.substring(1);
-      const params = new URLSearchParams(hash);
-      let token = params.get('access_token');
-
-      if (token) {
-        localStorage.setItem('sb_access_token', token);
-        // URLの後ろの長い文字列をスッキリ消す
-        history.replaceState(null, null, ' ');
-      } else {
-        token = localStorage.getItem('sb_access_token');
-      }
-
-      if (token) {
-        // Supabaseに直接ユーザー情報を問い合わせる
-        const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'apikey': SUPABASE_ANON_KEY
-          }
-        });
-
-        if (res.ok) {
-          const user = await res.json();
-          loginView.classList.add('hidden');
-          userView.classList.remove('hidden');
-          userInfo.textContent = `ログイン中のメール: ${user.email}`;
-          return;
-        }
-      }
-
-      // 未ログインの場合
-      loginView.classList.remove('hidden');
-      userView.classList.add('hidden');
-    }
-
-    checkAuth();
   </script>
 
 </body>
