@@ -6,7 +6,6 @@
   <style>
     canvas {
       border: 1px solid #333;
-      /* 拡大時にドットがぼやけないようにする設定 */
       image-rendering: pixelated; 
       width: 500px;
       height: 500px;
@@ -22,34 +21,38 @@
     const SUPABASE_ANON_KEY = 'sb_publishable_TmSpj-OvbgolXIQOck0l_A_PVke17LC';
     const MAP_SIZE = 500;
 
-    // 国IDごとの色設定 [R, G, B]
+    // 国IDごとの色設定（new Arrayで記述）
     const COUNTRY_COLORS = {
-      0:, // 0: 未占領（薄い緑）
-      1:,   // 1: 国ID 1（赤）
-      2:,  // 2: 国ID 2（青）
-      10:  // 10: 国ID 10（黄色）
+      0: new Array(144, 238, 144), // 0: 未占領（薄い緑）
+      1: new Array(255, 80, 80),   // 1: 国ID 1（赤）
+      2: new Array(80, 120, 255),  // 2: 国ID 2（青）
+      10: new Array(255, 220, 50)  // 10: 国ID 10（黄色）
     };
 
     async function drawWorldMap() {
       const token = localStorage.getItem('sb_access_token');
 
-      // 1. Supabaseから world_map の map_data を取得
       const res = await fetch(`${SUPABASE_URL}/rest/v1/world_map?id=eq.1&select=map_data`, {
         headers: {
           'apikey': SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${token || SUPABASE_ANON_KEY}`
         }
       });
 
       if (!res.ok) {
-        console.error('マップ取得エラー:', await res.text());
+        alert('取得エラー: ' + await res.text());
         return;
       }
 
       const rows = await res.json();
-      const base64Str = rows.map_data;
+      if (!rows || rows.length === 0) {
+        alert('データが空です。RLSの読み取り許可を設定してください。');
+        return;
+      }
 
-      // 2. Base64文字列を 250,000個の数値配列（Uint16Array）に復元
+      const base64Str = rows.at(0).map_data;
+
+      // Base64文字列を 250,000個の数値配列（Uint16Array）に復元
       const binaryStr = atob(base64Str);
       const bytes = new Uint8Array(binaryStr.length);
       for (let i = 0; i < binaryStr.length; i++) {
@@ -57,29 +60,32 @@
       }
       const worldGrid = new Uint16Array(bytes.buffer);
 
-      // 3. Canvasに25万マスを一括描画
+      // Canvasに25万マスを一括描画
       const canvas = document.getElementById('map-canvas');
       const ctx = canvas.getContext('2d');
       const imgData = ctx.createImageData(MAP_SIZE, MAP_SIZE);
       const pixels = imgData.data;
 
+      const unitColor = new Array(255, 255, 255);
+      const defaultColor = new Array(200, 200, 200);
+
       for (let i = 0; i < worldGrid.length; i++) {
         const val = worldGrid[i];
-        const countryId = val >> 10;    // 上位6ビット（国ID）を取り出す
-        const unitId = val & 0x03FF;    // 下位10ビット（ユニットID）を取り出す
+        const countryId = val >> 10;
+        const unitId = val & 0x03FF;
 
         let color;
         if (unitId > 0) {
-          color =; // ユニットがいるマスは白で表示
+          color = unitColor;
         } else {
-          color = COUNTRY_COLORS[countryId] ||; // 未登録の国IDはグレー
+          color = COUNTRY_COLORS[countryId] || defaultColor;
         }
 
         const pIndex = i * 4;
-        pixels[pIndex]     = color; // R
-        pixels[pIndex + 1] = color; // G
-        pixels[pIndex + 2] = color; // B
-        pixels[pIndex + 3] = 255;      // 透明度（255 = 不透明）
+        pixels[pIndex]     = color.at(0);
+        pixels[pIndex + 1] = color.at(1);
+        pixels[pIndex + 2] = color.at(2);
+        pixels[pIndex + 3] = 255;
       }
 
       ctx.putImageData(imgData, 0, 0);
