@@ -2,74 +2,217 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>Make ur country - マップ表示</title>
+  <title>Make ur country - ゲーム画面</title>
   <style>
+    body { font-family: sans-serif; margin: 20px; }
     canvas {
-      border: 1px solid #333;
-      image-rendering: pixelated; 
+      border: 2px solid #333;
+      image-rendering: pixelated;
       width: 500px;
       height: 500px;
+      cursor: crosshair;
     }
+    #info-bar { margin-top: 10px; font-weight: bold; }
   </style>
 </head>
 <body>
 
-  <canvas id="map-canvas" width="500" height="500"></canvas>
+  <div>
+    <button id="logout-btn">ログアウト</button>
+    <span id="my-country-info">読み込み中...</span>
+  </div>
+  <br>
+
+  <canvas id="map-canvas" width="100" height="100"></canvas>
+  <div id="info-bar">マスをクリックすると座標と情報が表示されます</div>
 
   <script>
-    const SUPABASE_URL = 'https://qmtokeiqblcdcfqvpdzg.supabase.co';
+    const SUPABASE_URL = https://qmtokeiqblcdcfqvpdzg.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_TmSpj-OvbgolXIQOck0l_A_PVke17LC';
-    const MAP_SIZE = 500;
+    const MAP_SIZE = 100;
 
-    // 国IDごとの色設定（new Arrayで記述）
-    const COUNTRY_COLORS = {
-      0: new Array(144, 238, 144), // 0: 未占領（薄い緑）
-      1: new Array(255, 80, 80),   // 1: 国ID 1（赤）
-      2: new Array(80, 120, 255),  // 2: 国ID 2（青）
-      10: new Array(255, 220, 50)  // 10: 国ID 10（黄色）
-    };
+    let worldGrid = new Uint16Array(MAP_SIZE * MAP_SIZE);
+    let countryDict = {};
+    let myCountry = null;
 
-    async function drawWorldMap() {
+    // ログアウト処理
+    document.getElementById('logout-btn').addEventListener('click', () => {
+      localStorage.removeItem('sb_access_token');
+      window.location.href = './index.html';
+    });
+
+    // 'FFFFFF' の文字列を [R, G, B] に変換する関数
+    function cidToRgb(cidStr) {
+      if (!cidStr) return new Array(200, 200, 200);
+      const cleanHex = cidStr.replace('#', '').trim();
+      if (cleanHex.length !== 6) return new Array(200, 200, 200);
+      const num = parseInt(cleanHex, 16);
+      return new Array((num >> 16) & 255, (num >> 8) & 255, num & 255);
+    }
+
+    // Uint16Array を Base64 文字列に戻す関数（初期領土の保存用）
+    function gridToBase64(grid) {
+      const bytes = new Uint8Array(grid.buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
+    }
+
+    async function initGame() {
       const token = localStorage.getItem('sb_access_token');
+      if (!token) {
+        window.location.href = './index.html';
+        return;
+      }
 
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/world_map?id=eq.1&select=map_data`, {
-        headers: {
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${token || SUPABASE_ANON_KEY}`
+      const headers = {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      };
+
+      // 1. ログイン中のユーザー情報を確認
+      const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers });
+      if (!userRes.ok) {
+        localStorage.removeItem('sb_access_token');
+        window.location.href = './index.html';
+        return;
+      }
+      const user = await userRes.json();
+
+      // 2. countries テーブルから全プレイヤーの国情報を取得
+      const countriesRes = await fetch(`${SUPABASE_URL}/rest/v1/countries?select=*`, { headers });
+      if (countriesRes.ok) {
+        const countries = await countriesRes.json();
+
+        // 0番は未占領の土地（薄い緑）
+        countryDict[0] = {
+          name: '未占領地',
+          rgb: new Array(144, 238, 144)
+        };
+
+        for (const c of countries) {
+          const rawCid = c.Cid || c.cid || '888888';
+          countryDict[c.id] = {
+            name: c.country_name || `国ID:${c.id}`,
+            rgb: cidToRgb(rawCid),
+            hex: rawCid
+          };
+
+          if (c.user_id === user.email) {
+            myCountry = c;
+            document.getElementById('my-country-info').innerHTML =
+              `あなたの国：<b>${c.country_name}</b> (ID: ${c.id} / 色: <span style="background:#${rawCid}; padding:0 8px; border:1px solid #000;">#${rawCid}</span>)`;
+          }
         }
-      });
+      }
 
-      if (!res.ok) {
-        alert('取得エラー: ' + await res.text());
+      // まだ建国していない場合は setting.html へ戻す
+      if (!myCountry) {
+        window.location.href = './setting.html';
         return;
       }
 
-      const rows = await res.json();
+      // 3. world_map から100x100マップデータを取得
+      const mapRes = await fetch(`${SUPABASE_URL}/rest/v1/world_map?id=eq.1&select=map_data`, { headers });
+      if (!mapRes.ok) {
+        alert('マップ取得エラー: ' + await mapRes.text());
+        return;
+      }
+
+      const rows = await mapRes.json();
       if (!rows || rows.length === 0) {
-        alert('データが空です。RLSの読み取り許可を設定してください。');
+        alert('world_map のデータが空です');
         return;
       }
 
-      const base64Str = rows.at(0).map_data;
-
-      // Base64文字列を 250,000個の数値配列（Uint16Array）に復元
-      const binaryStr = atob(base64Str);
+      const cleanBase64 = rows.at(0).map_data.replace(/\s/g, '');
+      const binaryStr = atob(cleanBase64);
       const bytes = new Uint8Array(binaryStr.length);
       for (let i = 0; i < binaryStr.length; i++) {
         bytes[i] = binaryStr.charCodeAt(i);
       }
-      const worldGrid = new Uint16Array(bytes.buffer);
+      worldGrid = new Uint16Array(bytes.buffer);
 
-      // Canvasに25万マスを一括描画
+      // 4. 自分の領土がマップ上に1マスも無いか確認（建国直後の初期領土配置）
+      let hasTerritory = false;
+      const totalTiles = MAP_SIZE * MAP_SIZE;
+      for (let i = 0; i < totalTiles; i++) {
+        if ((worldGrid[i] >> 10) === myCountry.id) {
+          hasTerritory = true;
+          break;
+        }
+      }
+
+      if (!hasTerritory) {
+        await assignRandomInitialTile(headers);
+      }
+
+      // 5. Canvasに描画
+      renderMap();
+    }
+
+    // 未占領（国ID=0）のランダムな1マスを自国の初期領土にする関数
+    async function assignRandomInitialTile(headers) {
+      const emptyIndices = new Array();
+      const totalTiles = MAP_SIZE * MAP_SIZE;
+
+      // 国IDが 0（未占領）のマスをすべてリストアップ
+      for (let i = 0; i < totalTiles; i++) {
+        if ((worldGrid[i] >> 10) === 0) {
+          emptyIndices.push(i);
+        }
+      }
+
+      if (emptyIndices.length === 0) {
+        alert('空き地がありません！');
+        return;
+      }
+
+      // ランダムに1マス選ぶ
+      const randomIdx = emptyIndices[Math.floor(Math.random() * emptyIndices.length)];
+      const x = randomIdx % MAP_SIZE;
+      const y = Math.floor(randomIdx / MAP_SIZE);
+
+      // 自国のIDを上位6ビットに書き込む（ユニットIDは0）
+      worldGrid[randomIdx] = (myCountry.id << 10) | 0;
+
+      // Supabaseの world_map を更新して保存
+      const newBase64 = gridToBase64(worldGrid);
+      const updateRes = await fetch(`${SUPABASE_URL}/rest/v1/world_map?id=eq.1`, {
+        method: 'PATCH',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify({
+          map_data: newBase64,
+          updated_at: new Date().toISOString()
+        })
+      });
+
+      if (updateRes.ok) {
+        document.getElementById('info-bar').textContent =
+          `建国おめでとうございます！初期領土が (${x}, ${y}) に配置されました。`;
+      } else {
+        alert('初期領土の保存エラー（RLSのUPDATE許可を確認してください）: ' + await updateRes.text());
+      }
+    }
+
+    // マップ描画関数
+    function renderMap() {
       const canvas = document.getElementById('map-canvas');
       const ctx = canvas.getContext('2d');
       const imgData = ctx.createImageData(MAP_SIZE, MAP_SIZE);
       const pixels = imgData.data;
 
       const unitColor = new Array(255, 255, 255);
-      const defaultColor = new Array(200, 200, 200);
+      const unknownColor = new Array(180, 180, 180);
 
-      for (let i = 0; i < worldGrid.length; i++) {
+      const totalTiles = MAP_SIZE * MAP_SIZE;
+      for (let i = 0; i < totalTiles; i++) {
         const val = worldGrid[i];
         const countryId = val >> 10;
         const unitId = val & 0x03FF;
@@ -77,8 +220,10 @@
         let color;
         if (unitId > 0) {
           color = unitColor;
+        } else if (countryDict[countryId]) {
+          color = countryDict[countryId].rgb;
         } else {
-          color = COUNTRY_COLORS[countryId] || defaultColor;
+          color = unknownColor;
         }
 
         const pIndex = i * 4;
@@ -91,7 +236,25 @@
       ctx.putImageData(imgData, 0, 0);
     }
 
-    drawWorldMap();
+    // マップクリック時の座標・情報表示
+    document.getElementById('map-canvas').addEventListener('click', (e) => {
+      const canvas = e.target;
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.floor(((e.clientX - rect.left) / rect.width) * MAP_SIZE);
+      const y = Math.floor(((e.clientY - rect.top) / rect.height) * MAP_SIZE);
+
+      if (x >= 0 && x < MAP_SIZE && y >= 0 && y < MAP_SIZE) {
+        const val = worldGrid[y * MAP_SIZE + x];
+        const countryId = val >> 10;
+        const unitId = val & 0x03FF;
+        const ownerName = countryDict[countryId] ? countryDict[countryId].name : `不明(ID:${countryId})`;
+
+        document.getElementById('info-bar').textContent =
+          `選択座標: (${x}, ${y}) | 領有国: ${ownerName} | ユニットID: ${unitId === 0 ? 'なし' : unitId}`;
+      }
+    });
+
+    initGame();
   </script>
 
 </body>
