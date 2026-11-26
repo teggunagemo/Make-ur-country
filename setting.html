@@ -22,8 +22,11 @@
     <div>
       <label>首都名：<input type="text" id="input4" required></label>
     </div>
+    <div>
+      <label>国の色：<input type="color" id="input5" value="#ff5050"></label>
+    </div>
 
-    <button type="submit">決定</button>
+    <button type="submit" id="submit-btn">決定</button>
   </form>
 
   <script>
@@ -36,7 +39,7 @@
       window.location.href = './index.html';
     });
 
-    // ログインチェック
+    // ログインチェックと保存処理の登録
     async function verifyUser() {
       const token = localStorage.getItem('sb_access_token');
       if (!token) {
@@ -57,24 +60,26 @@
         return;
       }
 
+      // ログイン中のユーザー情報を取得（この中に user.email が入っている）
       const user = await res.json();
 
       // 決定ボタンが押された時の処理
       document.getElementById('setting-form').addEventListener('submit', async (e) => {
         e.preventDefault();
 
+        const submitBtn = document.getElementById('submit-btn');
+        submitBtn.disabled = true; // 連打防止
+
         const data = {
-          user_id: user.id,
+          user_id: user.email, // ★ログイン中のメールアドレスを user_id にセット
           country_name: document.getElementById('input1').value,
           shushoku: document.getElementById('input2').value,
           kokugi: document.getElementById('input3').value,
           shuto: document.getElementById('input4').value,
-
+          color: document.getElementById('input5').value
         };
 
-        // ▼ ここにSupabaseへの保存処理や game.html への遷移を書く ▼
-        console.log(data);
-                const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/countries`, {
+        const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/countries`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -91,6 +96,7 @@
         } else {
           const err = await saveRes.json();
           alert('保存エラー: ' + JSON.stringify(err));
+          submitBtn.disabled = false;
         }
       });
     }
