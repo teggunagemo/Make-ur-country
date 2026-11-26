@@ -8,8 +8,9 @@
 
   <button id="logout-btn">ログアウト</button>
   <h1>国家ステータス設定</h1>
+  <p id="status-msg">読み込み中...</p>
 
-  <form id="setting-form">
+  <form id="setting-form" style="display:none;">
     <div>
       <label>国家名：<input type="text" id="input1" required></label>
     </div>
@@ -21,9 +22,6 @@
     </div>
     <div>
       <label>首都名：<input type="text" id="input4" required></label>
-    </div>
-    <div>
-      <label>国の色：<input type="color" id="input5" value="#ff5050"></label>
     </div>
 
     <button type="submit" id="submit-btn">決定</button>
@@ -39,7 +37,12 @@
       window.location.href = './index.html';
     });
 
-    // ログインチェックと保存処理の登録
+    // FFFFFF のようなランダムな6桁の16進数RGB文字列を生成する関数
+    function generateRandomCid() {
+      const num = Math.floor(Math.random() * 0x1000000);
+      return num.toString(16).padStart(6, '0').toUpperCase();
+    }
+
     async function verifyUser() {
       const token = localStorage.getItem('sb_access_token');
       if (!token) {
@@ -47,36 +50,52 @@
         return;
       }
 
-      const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'apikey': SUPABASE_ANON_KEY
-        }
-      });
+      const headers = {
+        'Authorization': `Bearer ${token}`,
+        'apikey': SUPABASE_ANON_KEY
+      };
 
+      // 1. ログインチェック
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers });
       if (!res.ok) {
         localStorage.removeItem('sb_access_token');
         window.location.href = './index.html';
         return;
       }
 
-      // ログイン中のユーザー情報を取得（この中に user.email が入っている）
       const user = await res.json();
 
-      // 決定ボタンが押された時の処理
+      // 2. すでに自分の国が登録済みかチェック（登録済みなら game.html へ移動）
+      const checkRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/countries?user_id=eq.${encodeURIComponent(user.email)}&select=id`,
+        { headers }
+      );
+      if (checkRes.ok) {
+        const existingCountries = await checkRes.json();
+        if (existingCountries && existingCountries.length > 0) {
+          window.location.href = './game.html';
+          return;
+        }
+      }
+
+      // 未建国の場合は入力フォームを表示
+      document.getElementById('status-msg').style.display = 'none';
+      document.getElementById('setting-form').style.display = 'block';
+
+      // 3. 決定ボタンが押された時の処理
       document.getElementById('setting-form').addEventListener('submit', async (e) => {
         e.preventDefault();
 
         const submitBtn = document.getElementById('submit-btn');
-        submitBtn.disabled = true; // 連打防止
+        submitBtn.disabled = true;
 
         const data = {
-          user_id: user.email, // ★ログイン中のメールアドレスを user_id にセット
+          user_id: user.email,
           country_name: document.getElementById('input1').value,
           shushoku: document.getElementById('input2').value,
           kokugi: document.getElementById('input3').value,
           shuto: document.getElementById('input4').value,
-          color: document.getElementById('input5').value
+          Cid: generateRandomCid() // データベース側が小文字cidの場合は 'cid' に変更
         };
 
         const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/countries`, {
@@ -91,7 +110,6 @@
         });
 
         if (saveRes.ok) {
-          // 保存成功したらゲーム画面へ移動
           window.location.href = './game.html';
         } else {
           const err = await saveRes.json();
