@@ -77,7 +77,13 @@
     const zoomLabel = document.getElementById('zoom-label');
     const canvas = document.getElementById('map-canvas');
     const ctx = canvas.getContext('2d');
-
+window.addEventListener('error', (e) => {
+  console.error('JSエラー:', e.message, e.filename, e.lineno);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('Promiseエラー:', e.reason);
+});
+console.log('game.html スクリプト開始');
     document.getElementById('logout-btn').addEventListener('click', () => {
       localStorage.removeItem('sb_access_token');
       window.location.href = './index.html';
