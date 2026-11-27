@@ -171,3 +171,245 @@
       });
 
       if (!res.ok) {
+        throw new Error('首都座標の保存エラー（countries の RLS UPDATE ポリシーを確認してください）: ' + await res.text());
+      }
+
+      const updatedRows = await res.json();
+      const updated = updatedRows[0] || { capital_x: x, capital_y: y, is_defeated: isDefeated };
+
+      allCountries = allCountries.map((c) => (c.id === countryId ? { ...c, ...updated } : c));
+      if (myCountry && myCountry.id === countryId) {
+        myCountry = { ...myCountry, ...updated };
+      }
+    }
+
+    // ==========================================
+    // 3. 国家情報・3x3 初期領土生成ロジック
+    // ==========================================
+    function buildCountryDictionary(countries, userEmail) {
+      const dict = {
+        0: { name: '未占領地', rgb: [144, 238, 144] }
+      };
+      let foundMe = null;
+
+      for (const c of countries) {
+        const rawCid = c.Cid || c.cid || '888888';
+        dict[c.id] = {
+          name: c.country_name || `国ID:${c.id}`,
+          rgb: cidToRgb(rawCid),
+          hex: rawCid
+        };
+        if (c.user_id === userEmail) {
+          foundMe = c;
+        }
+      }
+
+      return { dict, myCountry: foundMe };
+    }
+
+    function findFirstOwnedTileIndex(countryId) {
+      for (let i = 0; i < TOTAL_TILES; i++) {
+        if (getOwnerId(worldGrid[i]) === countryId) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    function collectInitial3x3Indices(centerX, centerY) {
+      const indices = [];
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const x = centerX + dx;
+          const y = centerY + dy;
+          if (x < 0 || x >= MAP_SIZE || y < 0 || y >= MAP_SIZE) continue;
+
+          const idx = y * MAP_SIZE + x;
+          if (getOwnerId(worldGrid[idx]) === 0) {
+            indices.push(idx);
+          }
+        }
+      }
+      return indices;
+    }
+
+    async function assignInitial3x3Territory(headers) {
+      const emptyIndices = [];
+      for (let i = 0; i < TOTAL_TILES; i++) {
+        if (getOwnerId(worldGrid[i]) === 0) {
+          emptyIndices.push(i);
+        }
+      }
+
+      if (emptyIndices.length === 0) {
+        alert('空き地がありません！');
+        return;
+      }
+
+      const centerIdx = emptyIndices[Math.floor(Math.random() * emptyIndices.length)];
+      const centerX = centerIdx % MAP_SIZE;
+      const centerY = Math.floor(centerIdx / MAP_SIZE);
+
+      const targetIndices = collectInitial3x3Indices(centerX, centerY);
+      for (const idx of targetIndices) {
+        const currentUnit = getUnitId(worldGrid[idx]);
+        worldGrid[idx] = packCell(myCountry.id, currentUnit);
+      }
+
+      await patchWorldMap(headers, worldGrid);
+      await patchCountryCapital(headers, myCountry.id, centerX, centerY, false);
+
+      infoBar.textContent =
+        `建国おめでとうございます！首都 (${centerX}, ${centerY}) を中心に ${targetIndices.length} マス（3×3）の初期領土を獲得しました。`;
+    }
+
+    async function ensureInitialTerritory(headers) {
+      const firstIdx = findFirstOwnedTileIndex(myCountry.id);
+
+      if (firstIdx === -1) {
+        await assignInitial3x3Territory(headers);
+        return;
+      }
+
+      if (!hasValidCapital(myCountry)) {
+        const capX = firstIdx % MAP_SIZE;
+        const capY = Math.floor(firstIdx / MAP_SIZE);
+        await patchCountryCapital(headers, myCountry.id, capX, capY, false);
+      }
+
+      infoBar.textContent =
+        `マップ読み込み完了！首都: (${myCountry.capital_x}, ${myCountry.capital_y}) | マスをクリックすると座標が表示されます。`;
+    }
+
+    // ==========================================
+    // 4. Canvas 描画・クリックイベント
+    // ==========================================
+    function renderTerrainAndUnits() {
+      const imgData = ctx.createImageData(MAP_SIZE, MAP_SIZE);
+      const pixels = imgData.data;
+      const unitColor = [255, 255, 255];
+      const unknownColor = [180, 180, 180];
+
+      for (let i = 0; i < TOTAL_TILES; i++) {
+        const val = worldGrid[i];
+        const countryId = getOwnerId(val);
+        const unitId = getUnitId(val);
+
+        let color;
+        if (unitId > 0) {
+          color = unitColor;
+        } else if (countryDict[countryId]) {
+          color = countryDict[countryId].rgb;
+        } else {
+          color = unknownColor;
+        }
+
+        const pIndex = i * 4;
+        pixels[pIndex]     = color[0];
+        pixels[pIndex + 1] = color[1];
+        pixels[pIndex + 2] = color[2];
+        pixels[pIndex + 3] = 255;
+      }
+
+      ctx.putImageData(imgData, 0, 0);
+    }
+
+    function renderCapitals() {
+      ctx.fillStyle = CAPITAL_HEX;
+      for (const c of allCountries) {
+        if (c.is_defeated) continue;
+        if (hasValidCapital(c)) {
+          ctx.fillRect(c.capital_x, c.capital_y, 1, 1);
+        }
+      }
+    }
+
+    function renderMap() {
+      renderTerrainAndUnits();
+      renderCapitals();
+    }
+
+    function handleCanvasClick(e) {
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.floor(((e.clientX - rect.left) / rect.width) * MAP_SIZE);
+      const y = Math.floor(((e.clientY - rect.top) / rect.height) * MAP_SIZE);
+
+      if (x < 0 || x >= MAP_SIZE || y < 0 || y >= MAP_SIZE) return;
+
+      const val = worldGrid[y * MAP_SIZE + x];
+      const countryId = getOwnerId(val);
+      const unitId = getUnitId(val);
+      const ownerName = countryDict[countryId] ? countryDict[countryId].name : `不明(ID:${countryId})`;
+
+      const capitalCountry = allCountries.find(
+        (c) => !c.is_defeated && c.capital_x === x && c.capital_y === y
+      );
+      const capitalLabel = capitalCountry
+        ? ` | ★首都: ${capitalCountry.country_name || `国ID:${capitalCountry.id}`}`
+        : '';
+
+      infoBar.textContent =
+        `選択座標: (${x}, ${y}) | 領有国: ${ownerName} | ユニットID: ${unitId === 0 ? 'なし' : unitId}${capitalLabel}`;
+    }
+
+    canvas.addEventListener('click', handleCanvasClick);
+
+    // ==========================================
+    // 5. ゲーム起動エントリーポイント
+    // ==========================================
+    async function initGame() {
+      try {
+        const token = localStorage.getItem('sb_access_token');
+        if (!token) {
+          window.location.href = './index.html';
+          return;
+        }
+
+        const headers = {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${token}`
+        };
+
+        statusSpan.textContent = '1. ログイン情報を確認中...';
+        const user = await fetchAuthUser(headers);
+        if (!user) {
+          localStorage.removeItem('sb_access_token');
+          window.location.href = './index.html';
+          return;
+        }
+
+        statusSpan.textContent = '2. 国家データを取得中...';
+        allCountries = await fetchCountries(headers);
+        const built = buildCountryDictionary(allCountries, user.email);
+        countryDict = built.dict;
+        myCountry = built.myCountry;
+
+        if (!myCountry) {
+          statusSpan.style.color = 'red';
+          statusSpan.textContent = `エラー: ${user.email} の国データが countries テーブルから見つかりません（RLSのSELECT許可を確認してください）`;
+          return;
+        }
+
+        const myCid = myCountry.Cid || myCountry.cid || '888888';
+        statusSpan.innerHTML =
+          `あなたの国：<b>${myCountry.country_name}</b> (ID: ${myCountry.id} / 色: <span style="background:#${myCid}; padding:0 8px; border:1px solid #000;">#${myCid}</span>)`;
+
+        infoBar.textContent = '3. マップデータをダウンロード中...';
+        worldGrid = await fetchWorldMapGrid(headers);
+
+        infoBar.textContent = '4. 初期領土と首都を確認中...';
+        await ensureInitialTerritory(headers);
+
+        renderMap();
+      } catch (err) {
+        statusSpan.style.color = 'red';
+        statusSpan.textContent = '停止エラー: ' + err.message;
+        console.error(err);
+      }
+    }
+
+    initGame();
+  </script>
+
+</body>
+</html>
