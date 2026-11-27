@@ -4,24 +4,49 @@
   <meta charset="UTF-8">
   <title>Make ur country - ゲーム画面</title>
   <style>
-    body { font-family: sans-serif; margin: 20px; }
-    .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+      background: #fafafa;
+      color: #222;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    button {
+      padding: 6px 12px;
+      cursor: pointer;
+    }
     canvas {
       border: 2px solid #333;
       image-rendering: pixelated;
       width: 500px;
       height: 500px;
+      background: #ddd;
       cursor: grab;
       touch-action: none;
     }
-    canvas.dragging { cursor: grabbing; }
-    #info-bar { margin-top: 10px; font-weight: bold; }
+    canvas.dragging {
+      cursor: grabbing;
+    }
+    #info-bar {
+      margin-top: 10px;
+      font-weight: bold;
+    }
+    .error-text {
+      color: #c62828;
+      font-weight: bold;
+    }
   </style>
 </head>
 <body>
 
   <div class="toolbar">
-    <button id="logout-btn">ログアウト</button>
+    <button id="logout-btn" type="button">ログアウト</button>
     <span id="my-country-info">1. 起動中...</span>
   </div>
 
@@ -29,7 +54,7 @@
     <button id="zoom-in-btn" type="button">ズーム +</button>
     <button id="zoom-out-btn" type="button">ズーム -</button>
     <button id="zoom-reset-btn" type="button">全体表示 (1x)</button>
-    <span id="zoom-label">倍率: 1.0x | 視界: (0, 0)</span>
+    <span id="zoom-label">倍率: 1.0x | 視界: (0.0, 0.0)</span>
   </div>
 
   <canvas id="map-canvas" width="100" height="100"></canvas>
@@ -48,17 +73,26 @@
     const ZOOM_STEP = 1.25;
     const DRAG_THRESHOLD_PX = 5;
 
+    const statusSpan = document.getElementById('my-country-info');
+    const infoBar = document.getElementById('info-bar');
+    const zoomLabel = document.getElementById('zoom-label');
+    const canvas = document.getElementById('map-canvas');
+    const ctx = canvas.getContext('2d');
+
+    const fullMapCanvas = document.createElement('canvas');
+    fullMapCanvas.width = MAP_SIZE;
+    fullMapCanvas.height = MAP_SIZE;
+    const fullMapCtx = fullMapCanvas.getContext('2d');
+
     let worldGrid = new Uint16Array(TOTAL_TILES);
     let allCountries = [];
     let countryDict = {};
     let myCountry = null;
 
-    // 視界状態（単位はマップ座標系 0..100）
     let zoom = 1;
-    let viewX = 0; // 表示領域の左端（マップX）
-    let viewY = 0; // 表示領域の上端（マップY）
+    let viewX = 0;
+    let viewY = 0;
 
-    // ドラッグ状態
     let isPointerDown = false;
     let isDragging = false;
     let dragStartClientX = 0;
@@ -66,49 +100,46 @@
     let dragStartViewX = 0;
     let dragStartViewY = 0;
 
-    // オフスクリーンに全マップ（地形・領土・ユニット）を保持して高速描画
-    const fullMapCanvas = document.createElement('canvas');
-    fullMapCanvas.width = MAP_SIZE;
-    fullMapCanvas.height = MAP_SIZE;
-    const fullMapCtx = fullMapCanvas.getContext('2d');
+    function showFatalError(message) {
+      console.error('[Make ur country]', message);
+      statusSpan.className = 'error-text';
+      statusSpan.textContent = 'エラー: ' + message;
+      infoBar.textContent = '処理を停止しました。';
+    }
 
-    const statusSpan = document.getElementById('my-country-info');
-    const infoBar = document.getElementById('info-bar');
-    const zoomLabel = document.getElementById('zoom-label');
-    const canvas = document.getElementById('map-canvas');
-    const ctx = canvas.getContext('2d');
-window.addEventListener('error', (e) => {
-  console.error('JSエラー:', e.message, e.filename, e.lineno);
-});
-window.addEventListener('unhandledrejection', (e) => {
-  console.error('Promiseエラー:', e.reason);
-});
-console.log('game.html スクリプト開始');
+    window.addEventListener('error', (event) => {
+      showFatalError(event.message || '予期しないスクリプトエラー');
+    });
+
+    window.addEventListener('unhandledrejection', (event) => {
+      const reason = event.reason && event.reason.message ? event.reason.message : String(event.reason);
+      showFatalError(reason || '非同期処理エラー');
+    });
+
     document.getElementById('logout-btn').addEventListener('click', () => {
       localStorage.removeItem('sb_access_token');
       window.location.href = './index.html';
     });
 
-    // ==========================================
-    // 1. ビット操作・色変換・Base64 ユーティリティ
-    // ==========================================
-    function getOwnerId(cellVal) {
-      return cellVal >> 10;
+    // --- ビット操作・変換 ---
+    function getOwnerId(val) {
+      return val >> 10;
     }
 
-    function getUnitId(cellVal) {
-      return cellVal & 0x03FF;
+    function getUnitId(val) {
+      return val & 0x03ff;
     }
 
     function packCell(ownerId, unitId = 0) {
-      return ((ownerId << 10) | (unitId & 0x03FF)) >>> 0;
+      return ((ownerId << 10) | (unitId & 0x03ff)) >>> 0;
     }
 
     function cidToRgb(cidStr) {
       if (!cidStr) return [200, 200, 200];
-      const cleanHex = cidStr.replace('#', '').trim();
-      if (cleanHex.length !== 6) return [200, 200, 200];
-      const num = parseInt(cleanHex, 16);
+      const hex = String(cidStr).replace('#', '').trim();
+      if (hex.length !== 6) return [200, 200, 200];
+      const num = parseInt(hex, 16);
+      if (Number.isNaN(num)) return [200, 200, 200];
       return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
     }
 
@@ -122,17 +153,20 @@ console.log('game.html スクリプト開始');
     }
 
     function decodeMapBase64(base64Str) {
-      const cleanBase64 = (base64Str || '').replace(/\s/g, '');
-      const binaryStr = atob(cleanBase64);
-      const bytes = new Uint8Array(binaryStr.length);
-      for (let i = 0; i < binaryStr.length; i++) {
-        bytes[i] = binaryStr.charCodeAt(i);
+      const cleaned = String(base64Str || '').replace(/\s/g, '');
+      if (!cleaned) {
+        return new Uint16Array(TOTAL_TILES);
       }
-      const loadedGrid = new Uint16Array(bytes.buffer);
-      if (loadedGrid.length < TOTAL_TILES) {
-        throw new Error(`マップサイズが不足しています（現在: ${loadedGrid.length}マス / 必要: ${TOTAL_TILES}マス）`);
+      const binary = atob(cleaned);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
       }
-      return loadedGrid.slice(0, TOTAL_TILES);
+      const parsed = new Uint16Array(bytes.buffer);
+      if (parsed.length < TOTAL_TILES) {
+        throw new Error(`マップデータ長が不足しています（${parsed.length} / ${TOTAL_TILES}）`);
+      }
+      return parsed.slice(0, TOTAL_TILES);
     }
 
     function hasValidCapital(country) {
@@ -147,90 +181,34 @@ console.log('game.html スクリプト開始');
       );
     }
 
-    // ==========================================
-    // 2. ズーム・視界移動（カメラ制御）
-    // ==========================================
-    function clampCamera() {
-      const visibleSize = MAP_SIZE / zoom;
-      const maxOffset = Math.max(0, MAP_SIZE - visibleSize);
-      if (viewX < 0) viewX = 0;
-      if (viewY < 0) viewY = 0;
-      if (viewX > maxOffset) viewX = maxOffset;
-      if (viewY > maxOffset) viewY = maxOffset;
-    }
-
-    function updateZoomLabel() {
-      zoomLabel.textContent =
-        `倍率: ${zoom.toFixed(1)}x | 視界: (${viewX.toFixed(1)}, ${viewY.toFixed(1)})`;
-    }
-
-    function setZoomAt(newZoom, focusMapX = MAP_SIZE / 2, focusMapY = MAP_SIZE / 2) {
-      const clampedZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, newZoom));
-      if (clampedZoom === zoom) return;
-
-      const prevVisible = MAP_SIZE / zoom;
-      const nextVisible = MAP_SIZE / clampedZoom;
-
-      // カーソル位置（または画面中心）のマップ座標がずれないように視界を調整
-      const relX = (focusMapX - viewX) / prevVisible;
-      const relY = (focusMapY - viewY) / prevVisible;
-
-      zoom = clampedZoom;
-      viewX = focusMapX - relX * nextVisible;
-      viewY = focusMapY - relY * nextVisible;
-
-      clampCamera();
-      renderMap();
-    }
-
-    function resetCamera() {
-      zoom = 1;
-      viewX = 0;
-      viewY = 0;
-      renderMap();
-    }
-
-    function clientToMapCoord(clientX, clientY) {
-      const rect = canvas.getBoundingClientRect();
-      const normX = (clientX - rect.left) / rect.width;
-      const normY = (clientY - rect.top) / rect.height;
-      const visibleSize = MAP_SIZE / zoom;
-      return {
-        mapX: viewX + normX * visibleSize,
-        mapY: viewY + normY * visibleSize
-      };
-    }
-
-    // ==========================================
-    // 3. Supabase REST API 通信ヘルパー
-    // ==========================================
-    async function fetchAuthUser(headers) {
+    // --- 通信処理 ---
+    async function getCurrentUser(headers) {
       const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers });
       if (!res.ok) return null;
       return res.json();
     }
 
-    async function fetchCountries(headers) {
+    async function loadCountries(headers) {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/countries?select=*`, { headers });
       if (!res.ok) {
-        throw new Error('countries取得エラー: ' + await res.text());
+        throw new Error('countries 取得失敗: ' + (await res.text()));
       }
       return res.json();
     }
 
-    async function fetchWorldMapGrid(headers) {
+    async function loadWorldMap(headers) {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/world_map?id=eq.1&select=map_data`, { headers });
       if (!res.ok) {
-        throw new Error('world_map取得エラー: ' + await res.text());
+        throw new Error('world_map 取得失敗: ' + (await res.text()));
       }
       const rows = await res.json();
       if (!rows || rows.length === 0) {
-        throw new Error('world_map に id=1 のデータがありません');
+        throw new Error('world_map に id=1 の行が存在しません');
       }
       return decodeMapBase64(rows[0].map_data);
     }
 
-    async function patchWorldMap(headers, grid) {
+    async function saveWorldMap(headers, grid) {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/world_map?id=eq.1`, {
         method: 'PATCH',
         headers: {
@@ -243,13 +221,12 @@ console.log('game.html スクリプト開始');
           updated_at: new Date().toISOString()
         })
       });
-
       if (!res.ok) {
-        throw new Error('マップ保存エラー（RLSのUPDATE許可を確認してください）: ' + await res.text());
+        throw new Error('world_map 更新失敗: ' + (await res.text()));
       }
     }
 
-    async function patchCountryCapital(headers, countryId, x, y, isDefeated = false) {
+    async function saveCapital(headers, countryId, x, y, isDefeated = false) {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/countries?id=eq.${countryId}`, {
         method: 'PATCH',
         headers: {
@@ -263,121 +240,117 @@ console.log('game.html スクリプト開始');
           is_defeated: isDefeated
         })
       });
-
       if (!res.ok) {
-        throw new Error('首都座標の保存エラー（countries の RLS UPDATE ポリシーを確認してください）: ' + await res.text());
+        throw new Error('首都座標の保存失敗: ' + (await res.text()));
       }
-
       const updatedRows = await res.json();
       const updated = updatedRows[0] || { capital_x: x, capital_y: y, is_defeated: isDefeated };
-
       allCountries = allCountries.map((c) => (c.id === countryId ? { ...c, ...updated } : c));
       if (myCountry && myCountry.id === countryId) {
         myCountry = { ...myCountry, ...updated };
       }
     }
 
-    // ==========================================
-    // 4. 国家情報・3x3 初期領土生成ロジック
-    // ==========================================
-    function buildCountryDictionary(countries, userEmail) {
-      const dict = {
-        0: { name: '未占領地', rgb: [144, 238, 144] }
-      };
-      let foundMe = null;
-
-      for (const c of countries) {
-        const rawCid = c.Cid || c.cid || '888888';
-        dict[c.id] = {
-          name: c.country_name || `国ID:${c.id}`,
-          rgb: cidToRgb(rawCid),
-          hex: rawCid
-        };
-        if (c.user_id === userEmail) {
-          foundMe = c;
-        }
-      }
-
-      return { dict, myCountry: foundMe };
-    }
-
-    function findFirstOwnedTileIndex(countryId) {
-      for (let i = 0; i < TOTAL_TILES; i++) {
-        if (getOwnerId(worldGrid[i]) === countryId) {
-          return i;
-        }
-      }
-      return -1;
-    }
-
-    function collectInitial3x3Indices(centerX, centerY) {
-      const indices = [];
+    // --- 初期領土（3x3） ---
+    function collect3x3EmptyIndices(centerX, centerY) {
+      const result = [];
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
           const x = centerX + dx;
           const y = centerY + dy;
           if (x < 0 || x >= MAP_SIZE || y < 0 || y >= MAP_SIZE) continue;
-
           const idx = y * MAP_SIZE + x;
           if (getOwnerId(worldGrid[idx]) === 0) {
-            indices.push(idx);
+            result.push(idx);
           }
         }
       }
-      return indices;
+      return result;
     }
 
-    async function assignInitial3x3Territory(headers) {
-      const emptyIndices = [];
+    async function setupInitialTerritory(headers) {
+      let firstOwnedIdx = -1;
       for (let i = 0; i < TOTAL_TILES; i++) {
-        if (getOwnerId(worldGrid[i]) === 0) {
-          emptyIndices.push(i);
+        if (getOwnerId(worldGrid[i]) === myCountry.id) {
+          firstOwnedIdx = i;
+          break;
         }
       }
 
-      if (emptyIndices.length === 0) {
-        alert('空き地がありません！');
-        return;
-      }
+      if (firstOwnedIdx === -1) {
+        const emptyIndices = [];
+        for (let i = 0; i < TOTAL_TILES; i++) {
+          if (getOwnerId(worldGrid[i]) === 0) emptyIndices.push(i);
+        }
+        if (emptyIndices.length === 0) {
+          infoBar.textContent = '空き地がありません。';
+          return;
+        }
 
-      const centerIdx = emptyIndices[Math.floor(Math.random() * emptyIndices.length)];
-      const centerX = centerIdx % MAP_SIZE;
-      const centerY = Math.floor(centerIdx / MAP_SIZE);
+        const centerIdx = emptyIndices[Math.floor(Math.random() * emptyIndices.length)];
+        const centerX = centerIdx % MAP_SIZE;
+        const centerY = Math.floor(centerIdx / MAP_SIZE);
+        const targets = collect3x3EmptyIndices(centerX, centerY);
 
-      const targetIndices = collectInitial3x3Indices(centerX, centerY);
-      for (const idx of targetIndices) {
-        const currentUnit = getUnitId(worldGrid[idx]);
-        worldGrid[idx] = packCell(myCountry.id, currentUnit);
-      }
+        for (const idx of targets) {
+          worldGrid[idx] = packCell(myCountry.id, getUnitId(worldGrid[idx]));
+        }
 
-      await patchWorldMap(headers, worldGrid);
-      await patchCountryCapital(headers, myCountry.id, centerX, centerY, false);
-
-      infoBar.textContent =
-        `建国おめでとうございます！首都 (${centerX}, ${centerY}) を中心に ${targetIndices.length} マス（3×3）の初期領土を獲得しました。`;
-    }
-
-    async function ensureInitialTerritory(headers) {
-      const firstIdx = findFirstOwnedTileIndex(myCountry.id);
-
-      if (firstIdx === -1) {
-        await assignInitial3x3Territory(headers);
+        await saveWorldMap(headers, worldGrid);
+        await saveCapital(headers, myCountry.id, centerX, centerY, false);
+        infoBar.textContent =
+          `建国完了！首都 (${centerX}, ${centerY}) を中心に ${targets.length} マス（3×3）を確保しました。`;
         return;
       }
 
       if (!hasValidCapital(myCountry)) {
-        const capX = firstIdx % MAP_SIZE;
-        const capY = Math.floor(firstIdx / MAP_SIZE);
-        await patchCountryCapital(headers, myCountry.id, capX, capY, false);
+        const capX = firstOwnedIdx % MAP_SIZE;
+        const capY = Math.floor(firstOwnedIdx / MAP_SIZE);
+        await saveCapital(headers, myCountry.id, capX, capY, false);
       }
 
       infoBar.textContent =
-        `マップ読み込み完了！首都: (${myCountry.capital_x}, ${myCountry.capital_y}) | ドラッグで移動・ホイールでズーム・クリックで座標表示。`;
+        `読み込み完了！首都: (${myCountry.capital_x}, ${myCountry.capital_y}) | ドラッグで移動・ホイールでズーム`;
     }
 
-    // ==========================================
-    // 5. Canvas 描画・入力イベント
-    // ==========================================
+    // --- カメラ・描画 ---
+    function clampCamera() {
+      const visibleSize = MAP_SIZE / zoom;
+      const maxOffset = Math.max(0, MAP_SIZE - visibleSize);
+      viewX = Math.min(maxOffset, Math.max(0, viewX));
+      viewY = Math.min(maxOffset, Math.max(0, viewY));
+    }
+
+    function updateZoomLabel() {
+      zoomLabel.textContent =
+        `倍率: ${zoom.toFixed(1)}x | 視界: (${viewX.toFixed(1)}, ${viewY.toFixed(1)})`;
+    }
+
+    function setZoomAt(nextZoom, focusX = MAP_SIZE / 2, focusY = MAP_SIZE / 2) {
+      const clamped = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nextZoom));
+      if (clamped === zoom) return;
+
+      const prevVisible = MAP_SIZE / zoom;
+      const nextVisible = MAP_SIZE / clamped;
+      const relX = (focusX - viewX) / prevVisible;
+      const relY = (focusY - viewY) / prevVisible;
+
+      zoom = clamped;
+      viewX = focusX - relX * nextVisible;
+      viewY = focusY - relY * nextVisible;
+      clampCamera();
+      renderMap();
+    }
+
+    function clientToMapCoord(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const visibleSize = MAP_SIZE / zoom;
+      return {
+        mapX: viewX + ((clientX - rect.left) / rect.width) * visibleSize,
+        mapY: viewY + ((clientY - rect.top) / rect.height) * visibleSize
+      };
+    }
+
     function rebuildFullMapBuffer() {
       const imgData = fullMapCtx.createImageData(MAP_SIZE, MAP_SIZE);
       const pixels = imgData.data;
@@ -386,29 +359,22 @@ console.log('game.html スクリプト開始');
 
       for (let i = 0; i < TOTAL_TILES; i++) {
         const val = worldGrid[i];
-        const countryId = getOwnerId(val);
+        const ownerId = getOwnerId(val);
         const unitId = getUnitId(val);
+        const rgb = unitId > 0
+          ? unitColor
+          : (countryDict[ownerId] ? countryDict[ownerId].rgb : unknownColor);
 
-        let color;
-        if (unitId > 0) {
-          color = unitColor;
-        } else if (countryDict[countryId]) {
-          color = countryDict[countryId].rgb;
-        } else {
-          color = unknownColor;
-        }
-
-        const pIndex = i * 4;
-        pixels[pIndex]     = color[0];
-        pixels[pIndex + 1] = color[1];
-        pixels[pIndex + 2] = color[2];
-        pixels[pIndex + 3] = 255;
+        const p = i * 4;
+        pixels[p] = rgb[0];
+        pixels[p + 1] = rgb[1];
+        pixels[p + 2] = rgb[2];
+        pixels[p + 3] = 255;
       }
-
       fullMapCtx.putImageData(imgData, 0, 0);
     }
 
-    function renderVisibleMap() {
+    function renderMap() {
       clampCamera();
       const visibleSize = MAP_SIZE / zoom;
 
@@ -419,58 +385,38 @@ console.log('game.html スクリプト開始');
         viewX, viewY, visibleSize, visibleSize,
         0, 0, MAP_SIZE, MAP_SIZE
       );
-    }
 
-    function renderCapitals() {
-      const visibleSize = MAP_SIZE / zoom;
       const dotSize = Math.max(0.35, 1 / Math.sqrt(zoom));
-
       ctx.fillStyle = CAPITAL_HEX;
       for (const c of allCountries) {
         if (c.is_defeated || !hasValidCapital(c)) continue;
-
         const cx = c.capital_x + 0.5;
         const cy = c.capital_y + 0.5;
-        if (
-          cx < viewX - 1 || cx > viewX + visibleSize + 1 ||
-          cy < viewY - 1 || cy > viewY + visibleSize + 1
-        ) {
-          continue;
-        }
-
-        const screenX = ((cx - viewX) / visibleSize) * MAP_SIZE;
-        const screenY = ((cy - viewY) / visibleSize) * MAP_SIZE;
-        ctx.fillRect(screenX - dotSize / 2, screenY - dotSize / 2, dotSize, dotSize);
+        const sx = ((cx - viewX) / visibleSize) * MAP_SIZE;
+        const sy = ((cy - viewY) / visibleSize) * MAP_SIZE;
+        ctx.fillRect(sx - dotSize / 2, sy - dotSize / 2, dotSize, dotSize);
       }
-    }
 
-    function renderMap() {
-      renderVisibleMap();
-      renderCapitals();
       updateZoomLabel();
     }
 
-    function handleCanvasClick(clientX, clientY) {
+    function handleTileClick(clientX, clientY) {
       const { mapX, mapY } = clientToMapCoord(clientX, clientY);
       const x = Math.floor(mapX);
       const y = Math.floor(mapY);
-
       if (x < 0 || x >= MAP_SIZE || y < 0 || y >= MAP_SIZE) return;
 
       const val = worldGrid[y * MAP_SIZE + x];
-      const countryId = getOwnerId(val);
+      const ownerId = getOwnerId(val);
       const unitId = getUnitId(val);
-      const ownerName = countryDict[countryId] ? countryDict[countryId].name : `不明(ID:${countryId})`;
-
-      const capitalCountry = allCountries.find(
+      const ownerName = countryDict[ownerId] ? countryDict[ownerId].name : `不明(ID:${ownerId})`;
+      const capCountry = allCountries.find(
         (c) => !c.is_defeated && c.capital_x === x && c.capital_y === y
       );
-      const capitalLabel = capitalCountry
-        ? ` | ★首都: ${capitalCountry.country_name || `国ID:${capitalCountry.id}`}`
-        : '';
+      const capText = capCountry ? ` | ★首都: ${capCountry.country_name || `国ID:${capCountry.id}`}` : '';
 
       infoBar.textContent =
-        `選択座標: (${x}, ${y}) | 領有国: ${ownerName} | ユニットID: ${unitId === 0 ? 'なし' : unitId}${capitalLabel}`;
+        `座標 (${x}, ${y}) | 領有: ${ownerName} | ユニット: ${unitId === 0 ? 'なし' : unitId}${capText}`;
     }
 
     canvas.addEventListener('pointerdown', (e) => {
@@ -487,22 +433,117 @@ console.log('game.html スクリプト開始');
 
     canvas.addEventListener('pointermove', (e) => {
       if (!isPointerDown) return;
-
-      const dxPx = e.clientX - dragStartClientX;
-      const dyPx = e.clientY - dragStartClientY;
-
-      if (!isDragging && Math.hypot(dxPx, dyPx) >= DRAG_THRESHOLD_PX) {
+      const dx = e.clientX - dragStartClientX;
+      const dy = e.clientY - dragStartClientY;
+      if (!isDragging && Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX) {
         isDragging = true;
       }
-
       if (isDragging) {
         const rect = canvas.getBoundingClientRect();
         const visibleSize = MAP_SIZE / zoom;
-        const mapDeltaX = (dxPx / rect.width) * visibleSize;
-        const mapDeltaY = (dyPx / rect.height) * visibleSize;
-
-        viewX = dragStartViewX - mapDeltaX;
-        viewY = dragStartViewY - mapDeltaY;
+        viewX = dragStartViewX - (dx / rect.width) * visibleSize;
+        viewY = dragStartViewY - (dy / rect.height) * visibleSize;
         renderMap();
       }
     });
+
+    canvas.addEventListener('pointerup', (e) => {
+      if (!isPointerDown) return;
+      const wasDragging = isDragging;
+      isPointerDown = false;
+      isDragging = false;
+      canvas.classList.remove('dragging');
+      if (canvas.hasPointerCapture(e.pointerId)) {
+        canvas.releasePointerCapture(e.pointerId);
+      }
+      if (!wasDragging) {
+        handleTileClick(e.clientX, e.clientY);
+      }
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const { mapX, mapY } = clientToMapCoord(e.clientX, e.clientY);
+      setZoomAt(e.deltaY < 0 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP, mapX, mapY);
+    }, { passive: false });
+
+    document.getElementById('zoom-in-btn').addEventListener('click', () => {
+      const visibleSize = MAP_SIZE / zoom;
+      setZoomAt(zoom * ZOOM_STEP, viewX + visibleSize / 2, viewY + visibleSize / 2);
+    });
+
+    document.getElementById('zoom-out-btn').addEventListener('click', () => {
+      const visibleSize = MAP_SIZE / zoom;
+      setZoomAt(zoom / ZOOM_STEP, viewX + visibleSize / 2, viewY + visibleSize / 2);
+    });
+
+    document.getElementById('zoom-reset-btn').addEventListener('click', () => {
+      zoom = 1;
+      viewX = 0;
+      viewY = 0;
+      renderMap();
+    });
+
+    // --- 起動 ---
+    async function startGame() {
+      const token = localStorage.getItem('sb_access_token');
+      if (!token) {
+        window.location.href = './index.html';
+        return;
+      }
+
+      const headers = {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      };
+
+      statusSpan.textContent = '1. ログイン情報を確認中...';
+      const user = await getCurrentUser(headers);
+      if (!user) {
+        localStorage.removeItem('sb_access_token');
+        window.location.href = './index.html';
+        return;
+      }
+
+      statusSpan.textContent = '2. 国家データを取得中...';
+      allCountries = await loadCountries(headers);
+      countryDict = { 0: { name: '未占領地', rgb: [144, 238, 144] } };
+      myCountry = null;
+
+      for (const c of allCountries) {
+        const rawCid = c.Cid || c.cid || '888888';
+        countryDict[c.id] = {
+          name: c.country_name || `国ID:${c.id}`,
+          rgb: cidToRgb(rawCid)
+        };
+        if (c.user_id === user.email) {
+          myCountry = c;
+        }
+      }
+
+      if (!myCountry) {
+        showFatalError(`${user.email} の国データが countries に見つかりません`);
+        return;
+      }
+
+      const myCid = myCountry.Cid || myCountry.cid || '888888';
+      statusSpan.innerHTML =
+        `あなたの国：<b>${myCountry.country_name}</b> (ID: ${myCountry.id} / 色: <span style="background:#${myCid}; padding:0 8px; border:1px solid #000;">#${myCid}</span>)`;
+
+      infoBar.textContent = '3. マップデータをダウンロード中...';
+      worldGrid = await loadWorldMap(headers);
+
+      infoBar.textContent = '4. 初期領土と首都を確認中...';
+      await setupInitialTerritory(headers);
+
+      rebuildFullMapBuffer();
+      renderMap();
+    }
+
+    startGame().catch((err) => {
+      showFatalError(err && err.message ? err.message : String(err));
+    });
+  </script>
+
+</body>
+</html>
