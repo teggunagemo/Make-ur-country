@@ -30,8 +30,10 @@
     const SUPABASE_URL = 'https://qmtokeiqblcdcfqvpdzg.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_TmSpj-OvbgolXIQOck0l_A_PVke17LC';
     const MAP_SIZE = 100;
+    const CAPITAL_HEX = '#FFD700';
 
     let worldGrid = new Uint16Array(MAP_SIZE * MAP_SIZE);
+    let allCountries = [];
     let countryDict = {};
     let myCountry = null;
 
@@ -44,11 +46,11 @@
     });
 
     function cidToRgb(cidStr) {
-      if (!cidStr) return new Array(200, 200, 200);
+      if (!cidStr) return [200, 200, 200];
       const cleanHex = cidStr.replace('#', '').trim();
-      if (cleanHex.length !== 6) return new Array(200, 200, 200);
+      if (cleanHex.length !== 6) return [200, 200, 200];
       const num = parseInt(cleanHex, 16);
-      return new Array((num >> 16) & 255, (num >> 8) & 255, num & 255);
+      return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
     }
 
     function gridToBase64(grid) {
@@ -58,6 +60,47 @@
         binary += String.fromCharCode(bytes[i]);
       }
       return btoa(binary);
+    }
+
+    function hasValidCapital(country) {
+      return (
+        country &&
+        typeof country.capital_x === 'number' &&
+        typeof country.capital_y === 'number' &&
+        country.capital_x >= 0 &&
+        country.capital_x < MAP_SIZE &&
+        country.capital_y >= 0 &&
+        country.capital_y < MAP_SIZE
+      );
+    }
+
+    async function saveCapitalToCountry(headers, countryId, x, y, isDefeated = false) {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/countries?id=eq.${countryId}`, {
+        method: 'PATCH',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=representation'
+        },
+        body: JSON.stringify({
+          capital_x: x,
+          capital_y: y,
+          is_defeated: isDefeated
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error('首都座標の保存エラー（countries の RLS UPDATE ポリシーを確認してください）: ' + await res.text());
+      }
+
+      const updatedRows = await res.json();
+      const updated = updatedRows[0] || { ...myCountry, capital_x: x, capital_y: y, is_defeated: isDefeated };
+
+      // allCountries 内の該当国データも更新
+      allCountries = allCountries.map((c) => (c.id === countryId ? { ...c, ...updated } : c));
+      if (myCountry && myCountry.id === countryId) {
+        myCountry = { ...myCountry, ...updated };
+      }
     }
 
     async function initGame() {
@@ -90,12 +133,12 @@
           throw new Error('countries取得エラー: ' + await countriesRes.text());
         }
 
-        const countries = await countriesRes.json();
+        allCountries = await countriesRes.json();
         countryDict = {
-          0: { name: '未占領地', rgb: new Array(144, 238, 144) }
+          0: { name: '未占領地', rgb: [144, 238, 144] }
         };
 
-        for (const c of countries) {
+        for (const c of allCountries) {
           const rawCid = c.Cid || c.cid || '888888';
           countryDict[c.id] = {
             name: c.country_name || `国ID:${c.id}`,
@@ -138,28 +181,33 @@
         }
         const loadedGrid = new Uint16Array(bytes.buffer);
 
-        // もしDBがまだ500x500(250,000マス)のままでも止まらないように100x100(10,000マス)に調整
         if (loadedGrid.length >= MAP_SIZE * MAP_SIZE) {
           worldGrid = loadedGrid.slice(0, MAP_SIZE * MAP_SIZE);
         } else {
           throw new Error(`マップサイズが不足しています（現在: ${loadedGrid.length}マス / 必要: 10000マス）`);
         }
 
-        // 4. 初期領土チェック
-        infoBar.textContent = '4. 初期領土を確認中...';
-        let hasTerritory = false;
+        // 4. 初期領土＆首都チェック
+        infoBar.textContent = '4. 初期領土と首都を確認中...';
+        let firstTerritoryIdx = -1;
         const totalTiles = MAP_SIZE * MAP_SIZE;
         for (let i = 0; i < totalTiles; i++) {
           if ((worldGrid[i] >> 10) === myCountry.id) {
-            hasTerritory = true;
+            firstTerritoryIdx = i;
             break;
           }
         }
 
-        if (!hasTerritory) {
+        if (firstTerritoryIdx === -1) {
           await assignRandomInitialTile(headers);
         } else {
-          infoBar.textContent = 'マップ読み込み完了！マスをクリックすると座標が表示されます。';
+          if (!hasValidCapital(myCountry)) {
+            const capX = firstTerritoryIdx % MAP_SIZE;
+            const capY = Math.floor(firstTerritoryIdx / MAP_SIZE);
+            await saveCapitalToCountry(headers, myCountry.id, capX, capY, false);
+          }
+          infoBar.textContent =
+            `マップ読み込み完了！首都: (${myCountry.capital_x}, ${myCountry.capital_y}) | マスをクリックすると座標が表示されます。`;
         }
 
         // 5. 描画
@@ -173,7 +221,7 @@
     }
 
     async function assignRandomInitialTile(headers) {
-      const emptyIndices = new Array();
+      const emptyIndices = [];
       const totalTiles = MAP_SIZE * MAP_SIZE;
 
       for (let i = 0; i < totalTiles; i++) {
@@ -207,11 +255,12 @@
         })
       });
 
-      if (updateRes.ok) {
-        infoBar.textContent = `建国おめでとうございます！初期領土が (${x}, ${y}) に配置されました。`;
-      } else {
+      if (!updateRes.ok) {
         throw new Error('初期領土の保存エラー（RLSのUPDATE許可を確認してください）: ' + await updateRes.text());
       }
+
+      await saveCapitalToCountry(headers, myCountry.id, x, y, false);
+      infoBar.textContent = `建国おめでとうございます！初期領土と首都が (${x}, ${y}) に配置されました。`;
     }
 
     function renderMap() {
@@ -220,8 +269,8 @@
       const imgData = ctx.createImageData(MAP_SIZE, MAP_SIZE);
       const pixels = imgData.data;
 
-      const unitColor = new Array(255, 255, 255);
-      const unknownColor = new Array(180, 180, 180);
+      const unitColor = [255, 255, 255];
+      const unknownColor = [180, 180, 180];
 
       const totalTiles = MAP_SIZE * MAP_SIZE;
       for (let i = 0; i < totalTiles; i++) {
@@ -246,6 +295,15 @@
       }
 
       ctx.putImageData(imgData, 0, 0);
+
+      // 敗北していない各国の首都を金色ドットで描画
+      ctx.fillStyle = CAPITAL_HEX;
+      for (const c of allCountries) {
+        if (c.is_defeated) continue;
+        if (hasValidCapital(c)) {
+          ctx.fillRect(c.capital_x, c.capital_y, 1, 1);
+        }
+      }
     }
 
     document.getElementById('map-canvas').addEventListener('click', (e) => {
@@ -260,8 +318,15 @@
         const unitId = val & 0x03FF;
         const ownerName = countryDict[countryId] ? countryDict[countryId].name : `不明(ID:${countryId})`;
 
+        const capitalCountry = allCountries.find(
+          (c) => !c.is_defeated && c.capital_x === x && c.capital_y === y
+        );
+        const capitalLabel = capitalCountry
+          ? ` | ★首都: ${capitalCountry.country_name || `国ID:${capitalCountry.id}`}`
+          : '';
+
         infoBar.textContent =
-          `選択座標: (${x}, ${y}) | 領有国: ${ownerName} | ユニットID: ${unitId === 0 ? 'なし' : unitId}`;
+          `選択座標: (${x}, ${y}) | 領有国: ${ownerName} | ユニットID: ${unitId === 0 ? 'なし' : unitId}${capitalLabel}`;
       }
     });
 
