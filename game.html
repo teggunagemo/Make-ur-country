@@ -5,23 +5,32 @@
   <title>Make ur country - ゲーム画面</title>
   <style>
     body { font-family: sans-serif; margin: 20px; }
+    .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
     canvas {
       border: 2px solid #333;
       image-rendering: pixelated;
       width: 500px;
       height: 500px;
-      cursor: crosshair;
+      cursor: grab;
+      touch-action: none;
     }
+    canvas.dragging { cursor: grabbing; }
     #info-bar { margin-top: 10px; font-weight: bold; }
   </style>
 </head>
 <body>
 
-  <div>
+  <div class="toolbar">
     <button id="logout-btn">ログアウト</button>
     <span id="my-country-info">1. 起動中...</span>
   </div>
-  <br>
+
+  <div class="toolbar">
+    <button id="zoom-in-btn" type="button">ズーム +</button>
+    <button id="zoom-out-btn" type="button">ズーム -</button>
+    <button id="zoom-reset-btn" type="button">全体表示 (1x)</button>
+    <span id="zoom-label">倍率: 1.0x | 視界: (0, 0)</span>
+  </div>
 
   <canvas id="map-canvas" width="100" height="100"></canvas>
   <div id="info-bar">読み込み完了までお待ちください</div>
@@ -34,13 +43,38 @@
     const TOTAL_TILES = MAP_SIZE * MAP_SIZE;
     const CAPITAL_HEX = '#FFD700';
 
+    const MIN_ZOOM = 1;
+    const MAX_ZOOM = 8;
+    const ZOOM_STEP = 1.25;
+    const DRAG_THRESHOLD_PX = 5;
+
     let worldGrid = new Uint16Array(TOTAL_TILES);
     let allCountries = [];
     let countryDict = {};
     let myCountry = null;
 
+    // 視界状態（単位はマップ座標系 0..100）
+    let zoom = 1;
+    let viewX = 0; // 表示領域の左端（マップX）
+    let viewY = 0; // 表示領域の上端（マップY）
+
+    // ドラッグ状態
+    let isPointerDown = false;
+    let isDragging = false;
+    let dragStartClientX = 0;
+    let dragStartClientY = 0;
+    let dragStartViewX = 0;
+    let dragStartViewY = 0;
+
+    // オフスクリーンに全マップ（地形・領土・ユニット）を保持して高速描画
+    const fullMapCanvas = document.createElement('canvas');
+    fullMapCanvas.width = MAP_SIZE;
+    fullMapCanvas.height = MAP_SIZE;
+    const fullMapCtx = fullMapCanvas.getContext('2d');
+
     const statusSpan = document.getElementById('my-country-info');
     const infoBar = document.getElementById('info-bar');
+    const zoomLabel = document.getElementById('zoom-label');
     const canvas = document.getElementById('map-canvas');
     const ctx = canvas.getContext('2d');
 
@@ -108,7 +142,61 @@
     }
 
     // ==========================================
-    // 2. Supabase REST API 通信ヘルパー
+    // 2. ズーム・視界移動（カメラ制御）
+    // ==========================================
+    function clampCamera() {
+      const visibleSize = MAP_SIZE / zoom;
+      const maxOffset = Math.max(0, MAP_SIZE - visibleSize);
+      if (viewX < 0) viewX = 0;
+      if (viewY < 0) viewY = 0;
+      if (viewX > maxOffset) viewX = maxOffset;
+      if (viewY > maxOffset) viewY = maxOffset;
+    }
+
+    function updateZoomLabel() {
+      zoomLabel.textContent =
+        `倍率: ${zoom.toFixed(1)}x | 視界: (${viewX.toFixed(1)}, ${viewY.toFixed(1)})`;
+    }
+
+    function setZoomAt(newZoom, focusMapX = MAP_SIZE / 2, focusMapY = MAP_SIZE / 2) {
+      const clampedZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, newZoom));
+      if (clampedZoom === zoom) return;
+
+      const prevVisible = MAP_SIZE / zoom;
+      const nextVisible = MAP_SIZE / clampedZoom;
+
+      // カーソル位置（または画面中心）のマップ座標がずれないように視界を調整
+      const relX = (focusMapX - viewX) / prevVisible;
+      const relY = (focusMapY - viewY) / prevVisible;
+
+      zoom = clampedZoom;
+      viewX = focusMapX - relX * nextVisible;
+      viewY = focusMapY - relY * nextVisible;
+
+      clampCamera();
+      renderMap();
+    }
+
+    function resetCamera() {
+      zoom = 1;
+      viewX = 0;
+      viewY = 0;
+      renderMap();
+    }
+
+    function clientToMapCoord(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const normX = (clientX - rect.left) / rect.width;
+      const normY = (clientY - rect.top) / rect.height;
+      const visibleSize = MAP_SIZE / zoom;
+      return {
+        mapX: viewX + normX * visibleSize,
+        mapY: viewY + normY * visibleSize
+      };
+    }
+
+    // ==========================================
+    // 3. Supabase REST API 通信ヘルパー
     // ==========================================
     async function fetchAuthUser(headers) {
       const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers });
@@ -184,7 +272,7 @@
     }
 
     // ==========================================
-    // 3. 国家情報・3x3 初期領土生成ロジック
+    // 4. 国家情報・3x3 初期領土生成ロジック
     // ==========================================
     function buildCountryDictionary(countries, userEmail) {
       const dict = {
@@ -278,14 +366,14 @@
       }
 
       infoBar.textContent =
-        `マップ読み込み完了！首都: (${myCountry.capital_x}, ${myCountry.capital_y}) | マスをクリックすると座標が表示されます。`;
+        `マップ読み込み完了！首都: (${myCountry.capital_x}, ${myCountry.capital_y}) | ドラッグで移動・ホイールでズーム・クリックで座標表示。`;
     }
 
     // ==========================================
-    // 4. Canvas 描画・クリックイベント
+    // 5. Canvas 描画・入力イベント
     // ==========================================
-    function renderTerrainAndUnits() {
-      const imgData = ctx.createImageData(MAP_SIZE, MAP_SIZE);
+    function rebuildFullMapBuffer() {
+      const imgData = fullMapCtx.createImageData(MAP_SIZE, MAP_SIZE);
       const pixels = imgData.data;
       const unitColor = [255, 255, 255];
       const unknownColor = [180, 180, 180];
@@ -311,28 +399,55 @@
         pixels[pIndex + 3] = 255;
       }
 
-      ctx.putImageData(imgData, 0, 0);
+      fullMapCtx.putImageData(imgData, 0, 0);
+    }
+
+    function renderVisibleMap() {
+      clampCamera();
+      const visibleSize = MAP_SIZE / zoom;
+
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, MAP_SIZE, MAP_SIZE);
+      ctx.drawImage(
+        fullMapCanvas,
+        viewX, viewY, visibleSize, visibleSize,
+        0, 0, MAP_SIZE, MAP_SIZE
+      );
     }
 
     function renderCapitals() {
+      const visibleSize = MAP_SIZE / zoom;
+      const dotSize = Math.max(0.35, 1 / Math.sqrt(zoom));
+
       ctx.fillStyle = CAPITAL_HEX;
       for (const c of allCountries) {
-        if (c.is_defeated) continue;
-        if (hasValidCapital(c)) {
-          ctx.fillRect(c.capital_x, c.capital_y, 1, 1);
+        if (c.is_defeated || !hasValidCapital(c)) continue;
+
+        const cx = c.capital_x + 0.5;
+        const cy = c.capital_y + 0.5;
+        if (
+          cx < viewX - 1 || cx > viewX + visibleSize + 1 ||
+          cy < viewY - 1 || cy > viewY + visibleSize + 1
+        ) {
+          continue;
         }
+
+        const screenX = ((cx - viewX) / visibleSize) * MAP_SIZE;
+        const screenY = ((cy - viewY) / visibleSize) * MAP_SIZE;
+        ctx.fillRect(screenX - dotSize / 2, screenY - dotSize / 2, dotSize, dotSize);
       }
     }
 
     function renderMap() {
-      renderTerrainAndUnits();
+      renderVisibleMap();
       renderCapitals();
+      updateZoomLabel();
     }
 
-    function handleCanvasClick(e) {
-      const rect = canvas.getBoundingClientRect();
-      const x = Math.floor(((e.clientX - rect.left) / rect.width) * MAP_SIZE);
-      const y = Math.floor(((e.clientY - rect.top) / rect.height) * MAP_SIZE);
+    function handleCanvasClick(clientX, clientY) {
+      const { mapX, mapY } = clientToMapCoord(clientX, clientY);
+      const x = Math.floor(mapX);
+      const y = Math.floor(mapY);
 
       if (x < 0 || x >= MAP_SIZE || y < 0 || y >= MAP_SIZE) return;
 
@@ -352,64 +467,36 @@
         `選択座標: (${x}, ${y}) | 領有国: ${ownerName} | ユニットID: ${unitId === 0 ? 'なし' : unitId}${capitalLabel}`;
     }
 
-    canvas.addEventListener('click', handleCanvasClick);
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      isPointerDown = true;
+      isDragging = false;
+      dragStartClientX = e.clientX;
+      dragStartClientY = e.clientY;
+      dragStartViewX = viewX;
+      dragStartViewY = viewY;
+      canvas.setPointerCapture(e.pointerId);
+      canvas.classList.add('dragging');
+    });
 
-    // ==========================================
-    // 5. ゲーム起動エントリーポイント
-    // ==========================================
-    async function initGame() {
-      try {
-        const token = localStorage.getItem('sb_access_token');
-        if (!token) {
-          window.location.href = './index.html';
-          return;
-        }
+    canvas.addEventListener('pointermove', (e) => {
+      if (!isPointerDown) return;
 
-        const headers = {
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${token}`
-        };
+      const dxPx = e.clientX - dragStartClientX;
+      const dyPx = e.clientY - dragStartClientY;
 
-        statusSpan.textContent = '1. ログイン情報を確認中...';
-        const user = await fetchAuthUser(headers);
-        if (!user) {
-          localStorage.removeItem('sb_access_token');
-          window.location.href = './index.html';
-          return;
-        }
-
-        statusSpan.textContent = '2. 国家データを取得中...';
-        allCountries = await fetchCountries(headers);
-        const built = buildCountryDictionary(allCountries, user.email);
-        countryDict = built.dict;
-        myCountry = built.myCountry;
-
-        if (!myCountry) {
-          statusSpan.style.color = 'red';
-          statusSpan.textContent = `エラー: ${user.email} の国データが countries テーブルから見つかりません（RLSのSELECT許可を確認してください）`;
-          return;
-        }
-
-        const myCid = myCountry.Cid || myCountry.cid || '888888';
-        statusSpan.innerHTML =
-          `あなたの国：<b>${myCountry.country_name}</b> (ID: ${myCountry.id} / 色: <span style="background:#${myCid}; padding:0 8px; border:1px solid #000;">#${myCid}</span>)`;
-
-        infoBar.textContent = '3. マップデータをダウンロード中...';
-        worldGrid = await fetchWorldMapGrid(headers);
-
-        infoBar.textContent = '4. 初期領土と首都を確認中...';
-        await ensureInitialTerritory(headers);
-
-        renderMap();
-      } catch (err) {
-        statusSpan.style.color = 'red';
-        statusSpan.textContent = '停止エラー: ' + err.message;
-        console.error(err);
+      if (!isDragging && Math.hypot(dxPx, dyPx) >= DRAG_THRESHOLD_PX) {
+        isDragging = true;
       }
-    }
 
-    initGame();
-  </script>
+      if (isDragging) {
+        const rect = canvas.getBoundingClientRect();
+        const visibleSize = MAP_SIZE / zoom;
+        const mapDeltaX = (dxPx / rect.width) * visibleSize;
+        const mapDeltaY = (dyPx / rect.height) * visibleSize;
 
-</body>
-</html>
+        viewX = dragStartViewX - mapDeltaX;
+        viewY = dragStartViewY - mapDeltaY;
+        renderMap();
+      }
+    });
