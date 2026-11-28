@@ -21,7 +21,13 @@
       padding: 6px 12px;
       cursor: pointer;
     }
-    canvas {
+    .game-layout {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    #map-canvas {
       border: 2px solid #333;
       image-rendering: pixelated;
       width: 500px;
@@ -30,8 +36,38 @@
       cursor: grab;
       touch-action: none;
     }
-    canvas.dragging {
+    #map-canvas.dragging {
       cursor: grabbing;
+    }
+    #sub-panel {
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid #888;
+      background: #fff;
+      min-width: 240px;
+    }
+    #sub-panel.is-open {
+      display: flex;
+    }
+    #detail-canvas {
+      border: 2px solid #444;
+      image-rendering: pixelated;
+      width: 240px;
+      height: 220px;
+      background: #18202c;
+      cursor: pointer;
+    }
+    .sub-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    #sub-caption {
+      font-size: 13px;
+      color: #444;
+      line-height: 1.4;
     }
     #info-bar {
       margin-top: 10px;
@@ -54,12 +90,30 @@
     <button id="zoom-in-btn" type="button">ズーム +</button>
     <button id="zoom-out-btn" type="button">ズーム -</button>
     <button id="zoom-reset-btn" type="button">全体表示 (1x)</button>
+    <button id="toggle-sub-btn" type="button">ユニットパネルを開く</button>
     <span id="zoom-label">倍率: 1.0x | 視界: (0.0, 0.0)</span>
   </div>
 
-  <canvas id="map-canvas" width="100" height="100"></canvas>
+  <div class="game-layout">
+    <canvas id="map-canvas" width="100" height="100"></canvas>
+
+    <aside id="sub-panel">
+      <strong>ユニット生産リスト</strong>
+      <canvas id="detail-canvas" width="240" height="220"></canvas>
+      <div id="sub-caption">選択中: 歩兵隊</div>
+      <div class="sub-actions">
+        <div style="display: flex; gap: 6px;">
+          <button id="sub-scroll-up-btn" type="button">↑ 上へ</button>
+          <button id="sub-scroll-down-btn" type="button">↓ 下へ</button>
+        </div>
+        <button id="sub-produce-btn" type="button">歩兵隊 を生産 (100)</button>
+      </div>
+    </aside>
+  </div>
+
   <div id="info-bar">読み込み完了までお待ちください</div>
 
+  <script src="./subcanvas.js"></script>
   <script>
     const SUPABASE_URL = 'https://qmtokeiqblcdcfqvpdzg.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_TmSpj-OvbgolXIQOck0l_A_PVke17LC';
@@ -79,15 +133,26 @@
     const canvas = document.getElementById('map-canvas');
     const ctx = canvas.getContext('2d');
 
+    const toggleSubBtn = document.getElementById('toggle-sub-btn');
+    const subPanel = document.getElementById('sub-panel');
+
     const fullMapCanvas = document.createElement('canvas');
     fullMapCanvas.width = MAP_SIZE;
     fullMapCanvas.height = MAP_SIZE;
     const fullMapCtx = fullMapCanvas.getContext('2d');
 
-    let worldGrid = new Uint16Array(TOTAL_TILES);
+    let worldTiles = Array.from({ length: TOTAL_TILES }, (_, idx) => ({
+      x: idx % MAP_SIZE,
+      y: Math.floor(idx / MAP_SIZE),
+      userid: 0,
+      unitid: 0
+    }));
     let allCountries = [];
     let countryDict = {};
     let myCountry = null;
+
+    let selectedX = 50;
+    let selectedY = 50;
 
     let zoom = 1;
     let viewX = 0;
@@ -121,17 +186,14 @@
       window.location.href = './index.html';
     });
 
-    // --- ビット操作・変換 ---
-    function getOwnerId(val) {
-      return val >> 10;
+    // --- 変換・判定ユーティリティ ---
+    function getTileIndex(x, y) {
+      return y * MAP_SIZE + x;
     }
 
-    function getUnitId(val) {
-      return val & 0x03ff;
-    }
-
-    function packCell(ownerId, unitId = 0) {
-      return ((ownerId << 10) | (unitId & 0x03ff)) >>> 0;
+    function getTile(x, y) {
+      if (x < 0 || x >= MAP_SIZE || y < 0 || y >= MAP_SIZE) return null;
+      return worldTiles[getTileIndex(x, y)];
     }
 
     function cidToRgb(cidStr) {
@@ -141,32 +203,6 @@
       const num = parseInt(hex, 16);
       if (Number.isNaN(num)) return [200, 200, 200];
       return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
-    }
-
-    function gridToBase64(grid) {
-      const bytes = new Uint8Array(grid.buffer);
-      let binary = '';
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      return btoa(binary);
-    }
-
-    function decodeMapBase64(base64Str) {
-      const cleaned = String(base64Str || '').replace(/\s/g, '');
-      if (!cleaned) {
-        return new Uint16Array(TOTAL_TILES);
-      }
-      const binary = atob(cleaned);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-      const parsed = new Uint16Array(bytes.buffer);
-      if (parsed.length < TOTAL_TILES) {
-        throw new Error(`マップデータ長が不足しています（${parsed.length} / ${TOTAL_TILES}）`);
-      }
-      return parsed.slice(0, TOTAL_TILES);
     }
 
     function hasValidCapital(country) {
@@ -181,7 +217,7 @@
       );
     }
 
-    // --- 通信処理 ---
+    // --- Supabase REST API（world_tiles / countries） ---
     async function getCurrentUser(headers) {
       const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers });
       if (!res.ok) return null;
@@ -196,33 +232,79 @@
       return res.json();
     }
 
-    async function loadWorldMap(headers) {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/world_map?id=eq.1&select=map_data`, { headers });
-      if (!res.ok) {
-        throw new Error('world_map 取得失敗: ' + (await res.text()));
+    async function fetchAllTiles(headers) {
+      const tiles = Array.from({ length: TOTAL_TILES }, (_, idx) => ({
+        x: idx % MAP_SIZE,
+        y: Math.floor(idx / MAP_SIZE),
+        userid: 0,
+        unitid: 0
+      }));
+
+      const pageSize = 1000;
+      for (let start = 0; start < TOTAL_TILES; start += pageSize) {
+        const end = Math.min(TOTAL_TILES - 1, start + pageSize - 1);
+        const res = await fetch(
+          `${SUPABASE_URL}/rest/v1/world_tiles?select=x,y,userid,unitid&order=y.asc,x.asc`,
+          {
+            headers: {
+              ...headers,
+              'Range': `${start}-${end}`
+            }
+          }
+        );
+
+        if (!res.ok) {
+          throw new Error('world_tiles 取得失敗: ' + (await res.text()));
+        }
+
+        const rows = await res.json();
+        for (const row of rows) {
+          if (
+            typeof row.x === 'number' &&
+            typeof row.y === 'number' &&
+            row.x >= 0 && row.x < MAP_SIZE &&
+            row.y >= 0 && row.y < MAP_SIZE
+          ) {
+            const idx = getTileIndex(row.x, row.y);
+            tiles[idx] = {
+              x: row.x,
+              y: row.y,
+              userid: Number(row.userid ?? 0),
+              unitid: Number(row.unitid ?? 0)
+            };
+          }
+        }
       }
-      const rows = await res.json();
-      if (!rows || rows.length === 0) {
-        throw new Error('world_map に id=1 の行が存在しません');
-      }
-      return decodeMapBase64(rows[0].map_data);
+
+      return tiles;
     }
 
-    async function saveWorldMap(headers, grid) {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/world_map?id=eq.1`, {
-        method: 'PATCH',
-        headers: {
-          ...headers,
-          'Content-Type': 'application/json',
-          'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify({
-          map_data: gridToBase64(grid),
-          updated_at: new Date().toISOString()
-        })
-      });
+    async function upsertTiles(headers, updatedTiles) {
+      if (!updatedTiles || updatedTiles.length === 0) return;
+
+      const payload = updatedTiles.map((t) => ({
+        x: t.x,
+        y: t.y,
+        userid: t.userid,
+        unitid: t.unitid,
+        updated_at: new Date().toISOString()
+      }));
+
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/world_tiles?on_conflict=x,y`,
+        {
+          method: 'POST',
+          headers: {
+            ...headers,
+            'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-duplicates,return=minimal'
+          },
+          body: JSON.stringify(payload)
+        }
+      );
+
       if (!res.ok) {
-        throw new Error('world_map 更新失敗: ' + (await res.text()));
+        throw new Error('world_tiles 保存失敗: ' + (await res.text()));
       }
     }
 
@@ -240,9 +322,11 @@
           is_defeated: isDefeated
         })
       });
+
       if (!res.ok) {
         throw new Error('首都座標の保存失敗: ' + (await res.text()));
       }
+
       const updatedRows = await res.json();
       const updated = updatedRows[0] || { capital_x: x, capital_y: y, is_defeated: isDefeated };
       allCountries = allCountries.map((c) => (c.id === countryId ? { ...c, ...updated } : c));
@@ -252,68 +336,60 @@
     }
 
     // --- 初期領土（3x3） ---
-    function collect3x3EmptyIndices(centerX, centerY) {
-      const result = [];
+    function collect3x3EmptyTiles(centerX, centerY) {
+      const targets = [];
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
-          const x = centerX + dx;
-          const y = centerY + dy;
-          if (x < 0 || x >= MAP_SIZE || y < 0 || y >= MAP_SIZE) continue;
-          const idx = y * MAP_SIZE + x;
-          if (getOwnerId(worldGrid[idx]) === 0) {
-            result.push(idx);
+          const tile = getTile(centerX + dx, centerY + dy);
+          if (tile && tile.userid === 0) {
+            targets.push(tile);
           }
         }
       }
-      return result;
+      return targets;
     }
 
     async function setupInitialTerritory(headers) {
-      let firstOwnedIdx = -1;
-      for (let i = 0; i < TOTAL_TILES; i++) {
-        if (getOwnerId(worldGrid[i]) === myCountry.id) {
-          firstOwnedIdx = i;
-          break;
-        }
-      }
+      const firstOwnedTile = worldTiles.find((t) => t.userid === myCountry.id);
 
-      if (firstOwnedIdx === -1) {
-        const emptyIndices = [];
-        for (let i = 0; i < TOTAL_TILES; i++) {
-          if (getOwnerId(worldGrid[i]) === 0) emptyIndices.push(i);
-        }
-        if (emptyIndices.length === 0) {
+      if (!firstOwnedTile) {
+        const emptyTiles = worldTiles.filter((t) => t.userid === 0);
+        if (emptyTiles.length === 0) {
           infoBar.textContent = '空き地がありません。';
           return;
         }
 
-        const centerIdx = emptyIndices[Math.floor(Math.random() * emptyIndices.length)];
-        const centerX = centerIdx % MAP_SIZE;
-        const centerY = Math.floor(centerIdx / MAP_SIZE);
-        const targets = collect3x3EmptyIndices(centerX, centerY);
+        const centerTile = emptyTiles[Math.floor(Math.random() * emptyTiles.length)];
+        const targets = collect3x3EmptyTiles(centerTile.x, centerTile.y);
 
-        for (const idx of targets) {
-          worldGrid[idx] = packCell(myCountry.id, getUnitId(worldGrid[idx]));
+        for (const tile of targets) {
+          tile.userid = myCountry.id;
         }
 
-        await saveWorldMap(headers, worldGrid);
-        await saveCapital(headers, myCountry.id, centerX, centerY, false);
+        await upsertTiles(headers, targets);
+        await saveCapital(headers, myCountry.id, centerTile.x, centerTile.y, false);
+
+        selectedX = centerTile.x;
+        selectedY = centerTile.y;
         infoBar.textContent =
-          `建国完了！首都 (${centerX}, ${centerY}) を中心に ${targets.length} マス（3×3）を確保しました。`;
+          `建国完了！首都 (${centerTile.x}, ${centerTile.y}) を中心に ${targets.length} マス（3×3）を確保しました。`;
         return;
       }
 
       if (!hasValidCapital(myCountry)) {
-        const capX = firstOwnedIdx % MAP_SIZE;
-        const capY = Math.floor(firstOwnedIdx / MAP_SIZE);
-        await saveCapital(headers, myCountry.id, capX, capY, false);
+        await saveCapital(headers, myCountry.id, firstOwnedTile.x, firstOwnedTile.y, false);
+      }
+
+      if (hasValidCapital(myCountry)) {
+        selectedX = myCountry.capital_x;
+        selectedY = myCountry.capital_y;
       }
 
       infoBar.textContent =
         `読み込み完了！首都: (${myCountry.capital_x}, ${myCountry.capital_y}) | ドラッグで移動・ホイールでズーム`;
     }
 
-    // --- カメラ・描画 ---
+    // --- カメラ・メイン描画 ---
     function clampCamera() {
       const visibleSize = MAP_SIZE / zoom;
       const maxOffset = Math.max(0, MAP_SIZE - visibleSize);
@@ -358,9 +434,9 @@
       const unknownColor = [180, 180, 180];
 
       for (let i = 0; i < TOTAL_TILES; i++) {
-        const val = worldGrid[i];
-        const ownerId = getOwnerId(val);
-        const unitId = getUnitId(val);
+        const tile = worldTiles[i];
+        const ownerId = tile ? tile.userid : 0;
+        const unitId = tile ? tile.unitid : 0;
         const rgb = unitId > 0
           ? unitColor
           : (countryDict[ownerId] ? countryDict[ownerId].rgb : unknownColor);
@@ -398,25 +474,31 @@
       }
 
       updateZoomLabel();
+      if (window.SubCanvas && subPanel.classList.contains('is-open')) {
+        window.SubCanvas.render();
+      }
     }
 
     function handleTileClick(clientX, clientY) {
       const { mapX, mapY } = clientToMapCoord(clientX, clientY);
       const x = Math.floor(mapX);
       const y = Math.floor(mapY);
-      if (x < 0 || x >= MAP_SIZE || y < 0 || y >= MAP_SIZE) return;
+      const tile = getTile(x, y);
+      if (!tile) return;
 
-      const val = worldGrid[y * MAP_SIZE + x];
-      const ownerId = getOwnerId(val);
-      const unitId = getUnitId(val);
-      const ownerName = countryDict[ownerId] ? countryDict[ownerId].name : `不明(ID:${ownerId})`;
+      selectedX = x;
+      selectedY = y;
+
+      const ownerName = countryDict[tile.userid]
+        ? countryDict[tile.userid].name
+        : `不明(ID:${tile.userid})`;
       const capCountry = allCountries.find(
         (c) => !c.is_defeated && c.capital_x === x && c.capital_y === y
       );
       const capText = capCountry ? ` | ★首都: ${capCountry.country_name || `国ID:${capCountry.id}`}` : '';
 
       infoBar.textContent =
-        `座標 (${x}, ${y}) | 領有: ${ownerName} | ユニット: ${unitId === 0 ? 'なし' : unitId}${capText}`;
+        `座標 (${x}, ${y}) | 領有: ${ownerName} | ユニット: ${tile.unitid === 0 ? 'なし' : tile.unitid}${capText}`;
     }
 
     canvas.addEventListener('pointerdown', (e) => {
@@ -484,6 +566,15 @@
       renderMap();
     });
 
+    toggleSubBtn.addEventListener('click', () => {
+      const willOpen = !subPanel.classList.contains('is-open');
+      subPanel.classList.toggle('is-open', willOpen);
+      toggleSubBtn.textContent = willOpen ? 'ユニットパネルを閉じる' : 'ユニットパネルを開く';
+      if (willOpen && window.SubCanvas) {
+        window.SubCanvas.render();
+      }
+    });
+
     // --- 起動 ---
     async function startGame() {
       const token = localStorage.getItem('sb_access_token');
@@ -530,11 +621,35 @@
       statusSpan.innerHTML =
         `あなたの国：<b>${myCountry.country_name}</b> (ID: ${myCountry.id} / 色: <span style="background:#${myCid}; padding:0 8px; border:1px solid #000;">#${myCid}</span>)`;
 
-      infoBar.textContent = '3. マップデータをダウンロード中...';
-      worldGrid = await loadWorldMap(headers);
+      infoBar.textContent = '3. タイルデータ（10,000行）をダウンロード中...';
+      worldTiles = await fetchAllTiles(headers);
 
       infoBar.textContent = '4. 初期領土と首都を確認中...';
       await setupInitialTerritory(headers);
+
+      if (window.SubCanvas) {
+        window.SubCanvas.init({
+          canvas: document.getElementById('detail-canvas'),
+          captionEl: document.getElementById('sub-caption'),
+          produceBtnEl: document.getElementById('sub-produce-btn'),
+          scrollUpBtn: document.getElementById('sub-scroll-up-btn'),
+          scrollDownBtn: document.getElementById('sub-scroll-down-btn'),
+          onProduce: async (unit) => {
+            const tile = getTile(selectedX, selectedY);
+            if (!tile || !myCountry) return;
+
+            tile.userid = myCountry.id;
+            tile.unitid = unit.id;
+
+            await upsertTiles(headers, [tile]);
+            rebuildFullMapBuffer();
+            renderMap();
+
+            infoBar.textContent =
+              `生産完了: 座標 (${selectedX}, ${selectedY}) に「${unit.name}」(unitid:${unit.id}) を配置しました。`;
+          }
+        });
+      }
 
       rebuildFullMapBuffer();
       renderMap();
