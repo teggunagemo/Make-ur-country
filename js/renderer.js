@@ -95,6 +95,7 @@ function renderMap() {
   clampCamera();
   const visibleSize = MAP_SIZE / state.zoom;
 
+  ctx.setTransform(RENDER_SCALE, 0, 0, RENDER_SCALE, 0, 0);
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
@@ -104,6 +105,7 @@ function renderMap() {
     0, 0, MAP_DRAW_WIDTH, MAP_DRAW_HEIGHT
   );
 
+  // 首都・選択枠の描画（既存の論理座標のまま）
   const dotSize = Math.max(0.35, 1 / Math.sqrt(state.zoom));
   ctx.fillStyle = CAPITAL_HEX;
   for (const c of state.allCountries) {
@@ -133,6 +135,10 @@ function renderMap() {
     ctx.strokeRect(selX, selY, cellSize, cellSize);
     ctx.restore();
   }
+
+  renderRightExtension(visibleSize);
+  updateZoomLabel();
+}
 
   renderRightExtension(visibleSize);
   updateZoomLabel();
