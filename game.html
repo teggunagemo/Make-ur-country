@@ -100,7 +100,7 @@
     let allCountries = [];
     let countryDict = {};
     let myCountry = null;
-
+  let substatus = 0;
     let selectedX = 50;
     let selectedY = 50;
 
@@ -419,7 +419,18 @@
       ctx.beginPath();
       ctx.moveTo(MAP_DRAW_WIDTH + 0.5, 0);
       ctx.lineTo(MAP_DRAW_WIDTH + 0.5, CANVAS_HEIGHT);
+    
       ctx.stroke();
+      const tile = getTile(selectedX, selectedY);
+      switch(substatus){
+        case 1:{
+          if (tile && tile.unitid > 0) {
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(122, 8, 12, 12);
+    }
+        }
+      }
       ctx.restore();
     }
 
@@ -472,6 +483,14 @@
 
     function handleExtensionClick(cx, cy) {
       // 拡張領域（cx >= MAP_DRAW_WIDTH）のクリック処理はここに実装
+      if (cx >= 100 && cx <= 120 && cy >= 0 && cy <= 20) {
+        ctx.fillStyle = 'orange';
+ctx.fillRect(100, 0, 20, 20);
+        substatus = 1;
+    infoBar.textContent = 'hello world';
+    return;
+  }
+
       infoBar.textContent = `拡張パネルクリック: (${cx.toFixed(1)}, ${cy.toFixed(1)})`;
     }
 
