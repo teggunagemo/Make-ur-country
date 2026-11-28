@@ -21,53 +21,18 @@
       padding: 6px 12px;
       cursor: pointer;
     }
-    .game-layout {
-      display: flex;
-      align-items: flex-start;
-      gap: 16px;
-      flex-wrap: wrap;
-    }
     #map-canvas {
       border: 2px solid #333;
       image-rendering: pixelated;
-      width: 500px;
+      width: 800px;
       height: 500px;
-      background: #ddd;
+      background: #222;
       cursor: grab;
       touch-action: none;
+      display: block;
     }
     #map-canvas.dragging {
       cursor: grabbing;
-    }
-    #sub-panel {
-      display: none;
-      flex-direction: column;
-      gap: 10px;
-      padding: 12px;
-      border: 1px solid #888;
-      background: #fff;
-      min-width: 240px;
-    }
-    #sub-panel.is-open {
-      display: flex;
-    }
-    #detail-canvas {
-      border: 2px solid #444;
-      image-rendering: pixelated;
-      width: 240px;
-      height: 220px;
-      background: #18202c;
-      cursor: pointer;
-    }
-    .sub-actions {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    #sub-caption {
-      font-size: 13px;
-      color: #444;
-      line-height: 1.4;
     }
     #info-bar {
       margin-top: 10px;
@@ -90,36 +55,24 @@
     <button id="zoom-in-btn" type="button">ズーム +</button>
     <button id="zoom-out-btn" type="button">ズーム -</button>
     <button id="zoom-reset-btn" type="button">全体表示 (1x)</button>
-    <button id="toggle-sub-btn" type="button">ユニットパネルを開く</button>
     <span id="zoom-label">倍率: 1.0x | 視界: (0.0, 0.0)</span>
   </div>
 
-  <div class="game-layout">
-    <canvas id="map-canvas" width="100" height="100"></canvas>
-
-    <aside id="sub-panel">
-      <strong>ユニット生産リスト</strong>
-      <canvas id="detail-canvas" width="240" height="220"></canvas>
-      <div id="sub-caption">選択中: 歩兵隊</div>
-      <div class="sub-actions">
-        <div style="display: flex; gap: 6px;">
-          <button id="sub-scroll-up-btn" type="button">↑ 上へ</button>
-          <button id="sub-scroll-down-btn" type="button">↓ 下へ</button>
-        </div>
-        <button id="sub-produce-btn" type="button">歩兵隊 を生産 (100)</button>
-      </div>
-    </aside>
-  </div>
-
+  <!-- 左 100x100: マップ領域 / 右 60x100: 拡張UI領域（CSS 800x500 -> 1内部単位 = 5px） -->
+  <canvas id="map-canvas" width="160" height="100"></canvas>
   <div id="info-bar">読み込み完了までお待ちください</div>
 
-  <script src="./subcanvas.js"></script>
   <script>
     const SUPABASE_URL = 'https://qmtokeiqblcdcfqvpdzg.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_TmSpj-OvbgolXIQOck0l_A_PVke17LC';
 
     const MAP_SIZE = 100;
     const TOTAL_TILES = MAP_SIZE * MAP_SIZE;
+    const MAP_DRAW_WIDTH = 100;
+    const MAP_DRAW_HEIGHT = 100;
+    const EXT_WIDTH = 60;
+    const CANVAS_WIDTH = MAP_DRAW_WIDTH + EXT_WIDTH;
+    const CANVAS_HEIGHT = MAP_DRAW_HEIGHT;
     const CAPITAL_HEX = '#FFD700';
 
     const MIN_ZOOM = 1;
@@ -132,9 +85,6 @@
     const zoomLabel = document.getElementById('zoom-label');
     const canvas = document.getElementById('map-canvas');
     const ctx = canvas.getContext('2d');
-
-    const toggleSubBtn = document.getElementById('toggle-sub-btn');
-    const subPanel = document.getElementById('sub-panel');
 
     const fullMapCanvas = document.createElement('canvas');
     fullMapCanvas.width = MAP_SIZE;
@@ -389,7 +339,24 @@
         `読み込み完了！首都: (${myCountry.capital_x}, ${myCountry.capital_y}) | ドラッグで移動・ホイールでズーム`;
     }
 
-    // --- カメラ・メイン描画 ---
+    // --- 座標変換・カメラ・描画 ---
+    function clientToCanvasCoord(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        cx: ((clientX - rect.left) / rect.width) * CANVAS_WIDTH,
+        cy: ((clientY - rect.top) / rect.height) * CANVAS_HEIGHT
+      };
+    }
+
+    function clientToMapCoord(clientX, clientY) {
+      const { cx, cy } = clientToCanvasCoord(clientX, clientY);
+      const visibleSize = MAP_SIZE / zoom;
+      return {
+        mapX: viewX + (cx / MAP_DRAW_WIDTH) * visibleSize,
+        mapY: viewY + (cy / MAP_DRAW_HEIGHT) * visibleSize
+      };
+    }
+
     function clampCamera() {
       const visibleSize = MAP_SIZE / zoom;
       const maxOffset = Math.max(0, MAP_SIZE - visibleSize);
@@ -418,15 +385,6 @@
       renderMap();
     }
 
-    function clientToMapCoord(clientX, clientY) {
-      const rect = canvas.getBoundingClientRect();
-      const visibleSize = MAP_SIZE / zoom;
-      return {
-        mapX: viewX + ((clientX - rect.left) / rect.width) * visibleSize,
-        mapY: viewY + ((clientY - rect.top) / rect.height) * visibleSize
-      };
-    }
-
     function rebuildFullMapBuffer() {
       const imgData = fullMapCtx.createImageData(MAP_SIZE, MAP_SIZE);
       const pixels = imgData.data;
@@ -450,16 +408,32 @@
       fullMapCtx.putImageData(imgData, 0, 0);
     }
 
+    // 右側拡張領域（x: 100..160, y: 0..100）の描画フック
+    function renderRightExtension(visibleSize) {
+      ctx.save();
+      ctx.fillStyle = '#1e242b';
+      ctx.fillRect(MAP_DRAW_WIDTH, 0, EXT_WIDTH, CANVAS_HEIGHT);
+
+      ctx.strokeStyle = '#555';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(MAP_DRAW_WIDTH + 0.5, 0);
+      ctx.lineTo(MAP_DRAW_WIDTH + 0.5, CANVAS_HEIGHT);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     function renderMap() {
       clampCamera();
       const visibleSize = MAP_SIZE / zoom;
 
       ctx.imageSmoothingEnabled = false;
-      ctx.clearRect(0, 0, MAP_SIZE, MAP_SIZE);
+      ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
       ctx.drawImage(
         fullMapCanvas,
         viewX, viewY, visibleSize, visibleSize,
-        0, 0, MAP_SIZE, MAP_SIZE
+        0, 0, MAP_DRAW_WIDTH, MAP_DRAW_HEIGHT
       );
 
       const dotSize = Math.max(0.35, 1 / Math.sqrt(zoom));
@@ -468,18 +442,46 @@
         if (c.is_defeated || !hasValidCapital(c)) continue;
         const cx = c.capital_x + 0.5;
         const cy = c.capital_y + 0.5;
-        const sx = ((cx - viewX) / visibleSize) * MAP_SIZE;
-        const sy = ((cy - viewY) / visibleSize) * MAP_SIZE;
+        const sx = ((cx - viewX) / visibleSize) * MAP_DRAW_WIDTH;
+        const sy = ((cy - viewY) / visibleSize) * MAP_DRAW_HEIGHT;
         ctx.fillRect(sx - dotSize / 2, sy - dotSize / 2, dotSize, dotSize);
       }
 
-      updateZoomLabel();
-      if (window.SubCanvas && subPanel.classList.contains('is-open')) {
-        window.SubCanvas.render();
+      if (
+        typeof selectedX === 'number' &&
+        typeof selectedY === 'number' &&
+        selectedX >= 0 &&
+        selectedX < MAP_SIZE &&
+        selectedY >= 0 &&
+        selectedY < MAP_SIZE
+      ) {
+        const cellSize = MAP_DRAW_WIDTH / visibleSize;
+        const selX = ((selectedX - viewX) / visibleSize) * MAP_DRAW_WIDTH;
+        const selY = ((selectedY - viewY) / visibleSize) * MAP_DRAW_HEIGHT;
+
+        ctx.save();
+        ctx.strokeStyle = '#ff1744';
+        ctx.lineWidth = Math.max(0.25, Math.min(0.8, 0.45 / Math.sqrt(zoom)));
+        ctx.strokeRect(selX, selY, cellSize, cellSize);
+        ctx.restore();
       }
+
+      renderRightExtension(visibleSize);
+      updateZoomLabel();
     }
 
-    function handleTileClick(clientX, clientY) {
+    function handleExtensionClick(cx, cy) {
+      // 拡張領域（cx >= MAP_DRAW_WIDTH）のクリック処理はここに実装
+      infoBar.textContent = `拡張パネルクリック: (${cx.toFixed(1)}, ${cy.toFixed(1)})`;
+    }
+
+    function handleCanvasClick(clientX, clientY) {
+      const { cx, cy } = clientToCanvasCoord(clientX, clientY);
+      if (cx >= MAP_DRAW_WIDTH) {
+        handleExtensionClick(cx, cy);
+        return;
+      }
+
       const { mapX, mapY } = clientToMapCoord(clientX, clientY);
       const x = Math.floor(mapX);
       const y = Math.floor(mapY);
@@ -499,10 +501,15 @@
 
       infoBar.textContent =
         `座標 (${x}, ${y}) | 領有: ${ownerName} | ユニット: ${tile.unitid === 0 ? 'なし' : tile.unitid}${capText}`;
+
+      renderMap();
     }
 
     canvas.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
+      const { cx } = clientToCanvasCoord(e.clientX, e.clientY);
+      if (cx >= MAP_DRAW_WIDTH) return;
+
       isPointerDown = true;
       isDragging = false;
       dragStartClientX = e.clientX;
@@ -522,9 +529,11 @@
       }
       if (isDragging) {
         const rect = canvas.getBoundingClientRect();
+        const mapDisplayWidth = rect.width * (MAP_DRAW_WIDTH / CANVAS_WIDTH);
+        const mapDisplayHeight = rect.height * (MAP_DRAW_HEIGHT / CANVAS_HEIGHT);
         const visibleSize = MAP_SIZE / zoom;
-        viewX = dragStartViewX - (dx / rect.width) * visibleSize;
-        viewY = dragStartViewY - (dy / rect.height) * visibleSize;
+        viewX = dragStartViewX - (dx / mapDisplayWidth) * visibleSize;
+        viewY = dragStartViewY - (dy / mapDisplayHeight) * visibleSize;
         renderMap();
       }
     });
@@ -539,12 +548,22 @@
         canvas.releasePointerCapture(e.pointerId);
       }
       if (!wasDragging) {
-        handleTileClick(e.clientX, e.clientY);
+        handleCanvasClick(e.clientX, e.clientY);
+      }
+    });
+
+    canvas.addEventListener('click', (e) => {
+      if (isPointerDown || isDragging) return;
+      const { cx } = clientToCanvasCoord(e.clientX, e.clientY);
+      if (cx >= MAP_DRAW_WIDTH) {
+        handleCanvasClick(e.clientX, e.clientY);
       }
     });
 
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
+      const { cx } = clientToCanvasCoord(e.clientX, e.clientY);
+      if (cx >= MAP_DRAW_WIDTH) return;
       const { mapX, mapY } = clientToMapCoord(e.clientX, e.clientY);
       setZoomAt(e.deltaY < 0 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP, mapX, mapY);
     }, { passive: false });
@@ -564,15 +583,6 @@
       viewX = 0;
       viewY = 0;
       renderMap();
-    });
-
-    toggleSubBtn.addEventListener('click', () => {
-      const willOpen = !subPanel.classList.contains('is-open');
-      subPanel.classList.toggle('is-open', willOpen);
-      toggleSubBtn.textContent = willOpen ? 'ユニットパネルを閉じる' : 'ユニットパネルを開く';
-      if (willOpen && window.SubCanvas) {
-        window.SubCanvas.render();
-      }
     });
 
     // --- 起動 ---
@@ -626,30 +636,6 @@
 
       infoBar.textContent = '4. 初期領土と首都を確認中...';
       await setupInitialTerritory(headers);
-
-      if (window.SubCanvas) {
-        window.SubCanvas.init({
-          canvas: document.getElementById('detail-canvas'),
-          captionEl: document.getElementById('sub-caption'),
-          produceBtnEl: document.getElementById('sub-produce-btn'),
-          scrollUpBtn: document.getElementById('sub-scroll-up-btn'),
-          scrollDownBtn: document.getElementById('sub-scroll-down-btn'),
-          onProduce: async (unit) => {
-            const tile = getTile(selectedX, selectedY);
-            if (!tile || !myCountry) return;
-
-            tile.userid = myCountry.id;
-            tile.unitid = unit.id;
-
-            await upsertTiles(headers, [tile]);
-            rebuildFullMapBuffer();
-            renderMap();
-
-            infoBar.textContent =
-              `生産完了: 座標 (${selectedX}, ${selectedY}) に「${unit.name}」(unitid:${unit.id}) を配置しました。`;
-          }
-        });
-      }
 
       rebuildFullMapBuffer();
       renderMap();
