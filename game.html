@@ -74,6 +74,14 @@
     const CANVAS_WIDTH = MAP_DRAW_WIDTH + EXT_WIDTH;
     const CANVAS_HEIGHT = MAP_DRAW_HEIGHT;
     const CAPITAL_HEX = '#FFD700';
+    const INFANTRY_UNIT_ID = 1;
+
+    const PRODUCE_INFANTRY_BTN = {
+      x: 106,
+      y: 28,
+      w: 48,
+      h: 16
+    };
 
     const MIN_ZOOM = 1;
     const MAX_ZOOM = 8;
@@ -91,6 +99,9 @@
     fullMapCanvas.height = MAP_SIZE;
     const fullMapCtx = fullMapCanvas.getContext('2d');
 
+    let currentHeaders = null;
+    let isProducing = false;
+
     let worldTiles = Array.from({ length: TOTAL_TILES }, (_, idx) => ({
       x: idx % MAP_SIZE,
       y: Math.floor(idx / MAP_SIZE),
@@ -100,7 +111,7 @@
     let allCountries = [];
     let countryDict = {};
     let myCountry = null;
-  let substatus = 0;
+
     let selectedX = 50;
     let selectedY = 50;
 
@@ -146,6 +157,15 @@
       return worldTiles[getTileIndex(x, y)];
     }
 
+    function isPointInRect(px, py, rect) {
+      return (
+        px >= rect.x &&
+        px <= rect.x + rect.w &&
+        py >= rect.y &&
+        py <= rect.y + rect.h
+      );
+    }
+
     function cidToRgb(cidStr) {
       if (!cidStr) return [200, 200, 200];
       const hex = String(cidStr).replace('#', '').trim();
@@ -167,7 +187,7 @@
       );
     }
 
-    // --- Supabase REST API（world_tiles / countries） ---
+    // --- Supabase REST API（world_tiles / countries / packet_queue） ---
     async function getCurrentUser(headers) {
       const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers });
       if (!res.ok) return null;
@@ -258,6 +278,22 @@
       }
     }
 
+    async function sendProducePacket(headers, packet) {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/packet_queue`, {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify(packet)
+      });
+
+      if (!res.ok) {
+        throw new Error('パケット送信失敗: ' + (await res.text()));
+      }
+    }
+
     async function saveCapital(headers, countryId, x, y, isDefeated = false) {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/countries?id=eq.${countryId}`, {
         method: 'PATCH',
@@ -339,6 +375,59 @@
         `読み込み完了！首都: (${myCountry.capital_x}, ${myCountry.capital_y}) | ドラッグで移動・ホイールでズーム`;
     }
 
+    // --- 歩兵生産（重ね置き防止・完了後パケット送信） ---
+    function canProduceInfantryAt(x, y) {
+      const tile = getTile(x, y);
+      if (!tile || !myCountry) {
+        return { ok: false, reason: '選択マスまたは自国情報が不正です' };
+      }
+      if (tile.userid !== myCountry.id) {
+        return { ok: false, reason: `座標 (${x}, ${y}) は自国領土ではありません` };
+      }
+      if (tile.unitid > 0) {
+        return { ok: false, reason: `座標 (${x}, ${y}) にはすでにユニット（ID:${tile.unitid}）がいます` };
+      }
+      return { ok: true, tile };
+    }
+
+    async function produceInfantryAtSelected(headers) {
+      if (isProducing || !headers) return;
+
+      const check = canProduceInfantryAt(selectedX, selectedY);
+      if (!check.ok) {
+        infoBar.textContent = check.reason;
+        return;
+      }
+
+      isProducing = true;
+      renderMap();
+
+      try {
+        const tile = check.tile;
+        tile.unitid = INFANTRY_UNIT_ID;
+
+        await upsertTiles(headers, [tile]);
+
+        const packet = {
+          type: 'produce_unit',
+          unit_type: 'infantry',
+          unitid: INFANTRY_UNIT_ID,
+          x: tile.x,
+          y: tile.y,
+          userid: myCountry.id,
+          created_at: new Date().toISOString()
+        };
+
+        await sendProducePacket(headers, packet);
+
+        rebuildFullMapBuffer();
+        infoBar.textContent = `歩兵を生産しパケットを送信しました: 座標 (${tile.x}, ${tile.y})`;
+      } finally {
+        isProducing = false;
+        renderMap();
+      }
+    }
+
     // --- 座標変換・カメラ・描画 ---
     function clientToCanvasCoord(clientX, clientY) {
       const rect = canvas.getBoundingClientRect();
@@ -408,7 +497,6 @@
       fullMapCtx.putImageData(imgData, 0, 0);
     }
 
-    // 右側拡張領域（x: 100..160, y: 0..100）の描画フック
     function renderRightExtension(visibleSize) {
       ctx.save();
       ctx.fillStyle = '#1e242b';
@@ -419,18 +507,53 @@
       ctx.beginPath();
       ctx.moveTo(MAP_DRAW_WIDTH + 0.5, 0);
       ctx.lineTo(MAP_DRAW_WIDTH + 0.5, CANVAS_HEIGHT);
-    
       ctx.stroke();
+
       const tile = getTile(selectedX, selectedY);
-      switch(substatus){
-        case 1:{
-          if (tile && tile.unitid > 0) {
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(122, 8, 12, 12);
-    }
-        }
+      const owner = tile ? countryDict[tile.userid] : null;
+      const ownerRgb = owner ? owner.rgb : [180, 180, 180];
+
+      // 選択マスの領有国カラー表示とユニット有無インジケータ
+      ctx.fillStyle = `rgb(${ownerRgb[0]}, ${ownerRgb[1]}, ${ownerRgb[2]})`;
+      ctx.fillRect(106, 8, 12, 12);
+
+      if (tile && tile.unitid > 0) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(122, 8, 12, 12);
       }
+
+      // 歩兵生産ボタン
+      const check = canProduceInfantryAt(selectedX, selectedY);
+      const canClick = check.ok && !isProducing;
+
+      ctx.fillStyle = canClick ? '#2e7d32' : '#455a64';
+      ctx.fillRect(
+        PRODUCE_INFANTRY_BTN.x,
+        PRODUCE_INFANTRY_BTN.y,
+        PRODUCE_INFANTRY_BTN.w,
+        PRODUCE_INFANTRY_BTN.h
+      );
+
+      ctx.strokeStyle = canClick ? '#a5d6a7' : '#78909c';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(
+        PRODUCE_INFANTRY_BTN.x + 0.5,
+        PRODUCE_INFANTRY_BTN.y + 0.5,
+        PRODUCE_INFANTRY_BTN.w - 1,
+        PRODUCE_INFANTRY_BTN.h - 1
+      );
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 7px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(
+        isProducing ? '送信中...' : '歩兵生産',
+        PRODUCE_INFANTRY_BTN.x + PRODUCE_INFANTRY_BTN.w / 2,
+        PRODUCE_INFANTRY_BTN.y + PRODUCE_INFANTRY_BTN.h / 2 + 0.5
+      );
+
       ctx.restore();
     }
 
@@ -482,14 +605,14 @@
     }
 
     function handleExtensionClick(cx, cy) {
-      // 拡張領域（cx >= MAP_DRAW_WIDTH）のクリック処理はここに実装
-      if (cx >= 100 && cx <= 120 && cy >= 0 && cy <= 20) {
-        ctx.fillStyle = 'orange';
-ctx.fillRect(100, 0, 20, 20);
-        substatus = 1;
-    infoBar.textContent = 'hello world';
-    return;
-  }
+      if (isPointInRect(cx, cy, PRODUCE_INFANTRY_BTN)) {
+        produceInfantryAtSelected(currentHeaders).catch((err) => {
+          isProducing = false;
+          renderMap();
+          showFatalError(err && err.message ? err.message : String(err));
+        });
+        return;
+      }
 
       infoBar.textContent = `拡張パネルクリック: (${cx.toFixed(1)}, ${cy.toFixed(1)})`;
     }
@@ -616,6 +739,7 @@ ctx.fillRect(100, 0, 20, 20);
         'apikey': SUPABASE_ANON_KEY,
         'Authorization': `Bearer ${token}`
       };
+      currentHeaders = headers;
 
       statusSpan.textContent = '1. ログイン情報を確認中...';
       const user = await getCurrentUser(headers);
