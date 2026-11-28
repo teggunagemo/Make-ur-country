@@ -203,6 +203,29 @@
       console.error(err);
       statusSpan.textContent = 'エラー: ' + err.message;
     });
+    
+ function runAtZeroSeconds(task) {
+      function scheduleNext() {
+        const now = new Date();
+        const delay = (60 - now.getSeconds()) * 1000 - now.getMilliseconds();
+
+        setTimeout(() => {
+          task();
+          scheduleNext();
+        }, delay);
+      }
+      scheduleNext();
+    }
+
+    // 実行開始
+    runAtZeroSeconds(updateText);
+    
+    function updatestatus(){
+            statusSpan.textContent = myCountry
+        ? `自国: ${myCountry.country_name} (ID: ${myCountry.id}),(Money: ${myCountry.money})`
+        : `ログイン中: ${user.email}`;
+    }
+    runAtZeroSeconds(updatestatus);
   </script>
 
 </body>
