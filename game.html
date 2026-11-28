@@ -191,7 +191,7 @@
       }
 
       statusSpan.textContent = myCountry
-        ? `自国: ${myCountry.country_name} (ID: ${myCountry.id})`
+        ? `自国: ${myCountry.country_name} (ID: ${myCountry.id}),(Money: ${myCountry.money})`
         : `ログイン中: ${user.email}`;
 
       worldTiles = await fetchAllTiles(headers);
